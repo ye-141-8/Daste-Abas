@@ -28,9 +28,8 @@ const int FINGER_START = 30;   const int FINGER_TARGET = 180;
 const int WRIST_START  = 30;   const int WRIST_TARGET  = 180;  
 const int ARM_START    = 30;   const int ARM_TARGET    = 90;   
 const int ELBOW_START  = 30;   const int ELBOW_TARGET  = 90;   
-const int DUAL_START   = 30;   const int DUAL_TARGET  = 90;   
+const int DUAL_START   = 30;   const int DUAL_TARGET   = 90;   
 
-const int STEP_DELAY = 50; 
 const int SLOW_HOME_SPEED = 30; // 30ms * 100 steps = 3000ms (3 seconds total homing time)
 
 // Global state tracking to perform gentle motion from unknown boot state
@@ -122,13 +121,11 @@ void testBaseMotorTwice(byte pin, int startAngle, int targetAngle) {
   Serial.print("Testing Base Plate Motor (Pin "); Serial.print(pin); Serial.println(")...");
 
   for (int pass = 1; pass <= 2; pass++) {
-    // Smooth rotation forward to target angle
     for (int a = startAngle; a <= targetAngle; a++) { 
       setServoAngle(pin, a); 
       delay(15); 
     }
     delay(200);
-    // Smooth rotation back to start angle
     for (int a = targetAngle; a >= startAngle; a--) { 
       setServoAngle(pin, a); 
       delay(15); 
@@ -219,60 +216,12 @@ void setup() {
   Serial.println("\n--- STEP 2: ALL MOTORS TOGETHER DIAGNOSTIC ---");
   testAllMotorsTogether();
 
-  Serial.println("--- DIAGNOSTICS COMPLETE. STARTING MAIN PROGRAM ---\n");
-  delay(1000);
+  Serial.println("--- DIAGNOSTICS COMPLETE. MOTORS HOLDING POSITION. ---");
 }
 
 // ---------------------------------------------------------------------------
-// MAIN MOTION LOOP
+// MAIN MOTION LOOP (Empty to prevent continuous motion)
 // ---------------------------------------------------------------------------
 void loop() {
-  // PHASE 1: Move from START angles to TARGET angles
-  Serial.println("Action: Moving arm forward...");
-  for (int step = 0; step <= 100; step++) {
-    float progress = step / 100.0;
-
-    int baseAngle   = BASE_START   + (progress * (BASE_TARGET   - BASE_START));
-    int fingerAngle = FINGER_START + (progress * (FINGER_TARGET - FINGER_START));
-    int wristAngle  = WRIST_START  + (progress * (WRIST_TARGET  - WRIST_START));
-    int armAngle    = ARM_START    + (progress * (ARM_TARGET    - ARM_START));
-    int elbowAngle  = ELBOW_START  + (progress * (ELBOW_TARGET  - ELBOW_START));
-    int dualAngle   = DUAL_START   + (progress * (DUAL_TARGET   - DUAL_START));
-
-    setServoAngle(PIN_BASE, baseAngle);
-    setServoAngle(PIN_FINGER, fingerAngle);
-    setServoAngle(PIN_WRIST, wristAngle);
-    setServoAngle(PIN_ARM, armAngle);
-    setServoAngle(PIN_ELBOW, elbowAngle);
-    setDualOpposingServos(dualAngle);
-
-    delay(STEP_DELAY);
-  }
-
-  delay(2000);
-
-  // PHASE 2: Return from TARGET angles back to START angles
-  Serial.println("Action: Returning arm to home position...");
-  for (int step = 100; step >= 0; step--) {
-    float progress = step / 100.0;
-
-    int baseAngle   = BASE_START   + (progress * (BASE_TARGET   - BASE_START));
-    int fingerAngle = FINGER_START + (progress * (FINGER_TARGET - FINGER_START));
-    int wristAngle  = WRIST_START  + (progress * (WRIST_TARGET  - WRIST_START));
-    int armAngle    = ARM_START    + (progress * (ARM_TARGET    - ARM_START));
-    int elbowAngle  = ELBOW_START  + (progress * (ELBOW_TARGET  - ELBOW_START));
-    int dualAngle   = DUAL_START   + (progress * (DUAL_TARGET   - DUAL_START));
-
-    setServoAngle(PIN_BASE, baseAngle);
-    setServoAngle(PIN_FINGER, fingerAngle);
-    setServoAngle(PIN_WRIST, wristAngle);
-    setServoAngle(PIN_ARM, armAngle);
-    setServoAngle(PIN_ELBOW, elbowAngle);
-    setDualOpposingServos(dualAngle);
-
-    delay(STEP_DELAY);
-  }
-
-  delay(2000);
+  // Intentionally empty: Motors will stay still at their starting positions.
 }
-

@@ -10,38 +10,31 @@
 #define PULSE_MAX 410 // ~180 degrees
 
 // ---------------------------------------------------------------------------
-// 1. PIN DEFINITIONS
+// 1. PIN DEFINITIONS (PCA9685 Board Channels)
 // ---------------------------------------------------------------------------
-#define PIN_BASE       1   // Motor 1 (Ground anchor base / Spaceship plate)
-#define PIN_FINGER     2   // Motor 2 (Gripper finger)
-#define PIN_WRIST      4   // Motor 3 (Wrist rotation)
-#define PIN_ARM        5   // Motor 4 (Main arm/shoulder joint)
-#define PIN_ELBOW      7   // Motor 5 (Elbow joint)
-#define PIN_DUAL_LEFT  10  // Left opposing motor
-#define PIN_DUAL_RIGHT 11  // Right opposing motor (Mirrors Pin 10)
+#define PIN_BASE       6   // Fixed: Match code pin to Channel 6
+#define PIN_FINGER     1   // Motor 2 (Finger - Channel 1)
+#define PIN_WRIST      2   // Motor 3 (Wrist - Channel 2)
+#define PIN_ELBOW      3   // Motor 5 (Elbow - Channel 3)
+#define PIN_ARM        4   // Motor 4 (Arm - Channel 4)
+#define PIN_DUAL_LEFT  10  // Motor 6 (Left opposing - Channel 10)
+#define PIN_DUAL_RIGHT 11  // Motor 7 (Right opposing - Channel 11)
 
 // ---------------------------------------------------------------------------
-// 2. ANGLE CONFIGURATION
+// 2. CONFIGURATION & STATE
 // ---------------------------------------------------------------------------
-const int BASE_START   = 0;    const int BASE_TARGET   = 180;  
-const int FINGER_START = 30;   const int FINGER_TARGET = 180; 
-const int WRIST_START  = 30;   const int WRIST_TARGET  = 180;  
-const int ARM_START    = 30;   const int ARM_TARGET    = 90;   
-const int ELBOW_START  = 30;   const int ELBOW_TARGET  = 90;   
-const int DUAL_START   = 30;   const int DUAL_TARGET   = 90;   
+int ANGLE_STEP = 5; // Step adjustment per keypress in degrees
 
-const int SLOW_HOME_SPEED = 30; // 30ms * 100 steps = 3000ms (3 seconds total homing time)
-
-// Global state tracking to perform gentle motion from unknown boot state
-int currentBase   = 90;
-int currentFinger = 90;
-int currentWrist  = 90;
-int currentArm    = 90;
-int currentElbow  = 90;
-int currentDual   = 90;
+// Initial joint angles — Set to 90 degrees so the arm stands straight up on boot
+int angleBase   = 90;
+int angleFinger = 90;
+int angleWrist  = 90;
+int angleArm    = 90;
+int angleElbow  = 90;
+int angleDual   = 90; // Left motor at 90; Right automatically mirrors to (180 - 90) = 90
 
 // ---------------------------------------------------------------------------
-// HARDWARE HELPER FUNCTIONS
+// HARDWARE DRIVER FUNCTIONS
 // ---------------------------------------------------------------------------
 void writeRegister(byte reg, byte value) {
   Wire.beginTransmission(PCA9685_ADDRESS);
@@ -68,160 +61,85 @@ void setServoAngle(byte channel, int angle) {
   setServo(channel, pulse);
 }
 
-// MIRRORED DUAL MOTOR FUNCTION (Pins 10 & 11)
 void setDualOpposingServos(int leftAngle) {
   leftAngle = constrain(leftAngle, 0, 180);
-  int rightAngle = 180 - leftAngle; // Inverse mapping for opposing motor
+  int rightAngle = 180 - leftAngle; // Inverse axis so dual motors mirror each other
   
   setServoAngle(PIN_DUAL_LEFT, leftAngle);
   setServoAngle(PIN_DUAL_RIGHT, rightAngle);
 }
 
-// ---------------------------------------------------------------------------
-// SLOW HOME POSITIONING (SAFE POWER-ON RESTART - 3 SECONDS)
-// ---------------------------------------------------------------------------
-void slowHomePosition() {
-  Serial.println("Moving all motors slowly to home positions over 3 seconds...");
-  
-  for (int step = 0; step <= 100; step++) {
-    float progress = step / 100.0;
+void updateServos() {
+  setServoAngle(PIN_BASE, angleBase);
+  setServoAngle(PIN_FINGER, angleFinger);
+  setServoAngle(PIN_WRIST, angleWrist);
+  setServoAngle(PIN_ARM, angleArm);
+  setServoAngle(PIN_ELBOW, angleElbow);
+  setDualOpposingServos(angleDual);
+}
 
-    int baseAngle   = currentBase   + (progress * (BASE_START   - currentBase));
-    int fingerAngle = currentFinger + (progress * (FINGER_START - currentFinger));
-    int wristAngle  = currentWrist  + (progress * (WRIST_START  - currentWrist));
-    int armAngle    = currentArm    + (progress * (ARM_START    - currentArm));
-    int elbowAngle  = currentElbow  + (progress * (ELBOW_START  - currentElbow));
-    int dualAngle   = currentDual   + (progress * (DUAL_START   - currentDual));
-
-    setServoAngle(PIN_BASE, baseAngle);
-    setServoAngle(PIN_FINGER, fingerAngle);
-    setServoAngle(PIN_WRIST, wristAngle);
-    setServoAngle(PIN_ARM, armAngle);
-    setServoAngle(PIN_ELBOW, elbowAngle);
-    setDualOpposingServos(dualAngle);
-
-    delay(SLOW_HOME_SPEED);
-  }
-
-  // Update tracked positions to match completed start state
-  currentBase   = BASE_START;
-  currentFinger = FINGER_START;
-  currentWrist  = WRIST_START;
-  currentArm    = ARM_START;
-  currentElbow  = ELBOW_START;
-  currentDual   = DUAL_START;
+void printStatus() {
+  Serial.print("M1 Base:"); Serial.print(angleBase);
+  Serial.print(" | M2 Finger:"); Serial.print(angleFinger);
+  Serial.print(" | M3 Wrist:"); Serial.print(angleWrist);
+  Serial.print(" | M4 Arm:"); Serial.print(angleArm);
+  Serial.print(" | M5 Elbow:"); Serial.print(angleElbow);
+  Serial.print(" | M6/7 Dual:"); Serial.print(angleDual);
+  Serial.print("/"); Serial.println(180 - angleDual);
 }
 
 // ---------------------------------------------------------------------------
-// DIAGNOSTIC TEST FUNCTIONS
-// ---------------------------------------------------------------------------
-
-// FIXED BASE MOTOR TEST (Rotates out to angle and returns back, 2 TIMES)
-void testBaseMotorTwice(byte pin, int startAngle, int targetAngle) {
-  Serial.print("Testing Base Plate Motor (Pin "); Serial.print(pin); Serial.println(")...");
-
-  for (int pass = 1; pass <= 2; pass++) {
-    for (int a = startAngle; a <= targetAngle; a++) { 
-      setServoAngle(pin, a); 
-      delay(15); 
-    }
-    delay(200);
-    for (int a = targetAngle; a >= startAngle; a--) { 
-      setServoAngle(pin, a); 
-      delay(15); 
-    }
-    delay(300);
-  }
-}
-
-// Single motor test (sweeps out and back TWICE)
-void testMotorGentle(byte pin, const char* name, int startAngle) {
-  Serial.print("Testing "); Serial.print(name); Serial.print(" on Pin "); Serial.println(pin);
-
-  for (int pass = 1; pass <= 2; pass++) {
-    for (int a = startAngle; a <= startAngle + 30; a++) { setServoAngle(pin, a); delay(15); }
-    for (int a = startAngle + 30; a >= startAngle; a--) { setServoAngle(pin, a); delay(15); }
-    delay(150);
-  }
-  delay(200);
-}
-
-// Dual opposing motors test (Pins 10 & 11 move together in opposite directions TWICE)
-void testDualMotorsGentle(int startLeftAngle) {
-  Serial.println("Testing Dual Opposing Motors (Pins 10 & 11)...");
-
-  for (int pass = 1; pass <= 2; pass++) {
-    for (int a = startLeftAngle; a <= startLeftAngle + 30; a++) { setDualOpposingServos(a); delay(15); }
-    for (int a = startLeftAngle + 30; a >= startLeftAngle; a--) { setDualOpposingServos(a); delay(15); }
-    delay(150);
-  }
-  delay(200);
-}
-
-// ALL MOTORS TOGETHER TEST
-void testAllMotorsTogether() {
-  Serial.println("Testing ALL MOTORS TOGETHER...");
-  
-  // Sweep out
-  for (int step = 0; step <= 50; step++) {
-    float p = step / 50.0;
-    setServoAngle(PIN_BASE,   BASE_START   + (p * 45));
-    setServoAngle(PIN_FINGER, FINGER_START + (p * 30));
-    setServoAngle(PIN_WRIST,  WRIST_START  + (p * 30));
-    setServoAngle(PIN_ARM,    ARM_START    + (p * 30));
-    setServoAngle(PIN_ELBOW,  ELBOW_START  + (p * 30));
-    setDualOpposingServos(DUAL_START + (p * 30));
-    delay(20);
-  }
-  // Sweep back
-  for (int step = 50; step >= 0; step--) {
-    float p = step / 50.0;
-    setServoAngle(PIN_BASE,   BASE_START   + (p * 45));
-    setServoAngle(PIN_FINGER, FINGER_START + (p * 30));
-    setServoAngle(PIN_WRIST,  WRIST_START  + (p * 30));
-    setServoAngle(PIN_ARM,    ARM_START    + (p * 30));
-    setServoAngle(PIN_ELBOW,  ELBOW_START  + (p * 30));
-    setDualOpposingServos(DUAL_START + (p * 30));
-    delay(20);
-  }
-  delay(500);
-}
-
-// ---------------------------------------------------------------------------
-// ARDUINO SETUP
+// SETUP & LOOP
 // ---------------------------------------------------------------------------
 void setup() {
   Serial.begin(9600);
   Wire.begin();
 
-  // Initialize PCA9685 clock for 50 Hz PWM
+  // Initialize PCA9685 @ 50 Hz PWM rate
   writeRegister(MODE1, 0x10);
   writeRegister(PRESCALE, 121);
   writeRegister(MODE1, 0x00);
   delay(10);
   writeRegister(MODE1, 0xA1);
 
-  // Slow-start homing sequence (3 seconds) to prevent gear damage on startup
-  slowHomePosition();
-  delay(1000);
-
-  Serial.println("\n--- STEP 1: INDIVIDUAL MOTOR DIAGNOSTICS (2 PASSES EACH) ---");
-  testBaseMotorTwice(PIN_BASE, BASE_START, 90);                    // Motor 1 (Pin 1) - Rotates 0 -> 90 -> 0 TWICE
-  testMotorGentle(PIN_FINGER, "Motor 2 - Finger", FINGER_START);    // Motor 2 (Pin 2)
-  testMotorGentle(PIN_WRIST,  "Motor 3 - Wrist",  WRIST_START);     // Motor 3 (Pin 4)
-  testMotorGentle(PIN_ARM,    "Motor 4 - Arm",    ARM_START);       // Motor 4 (Pin 5)
-  testMotorGentle(PIN_ELBOW,  "Motor 5 - Elbow",  ELBOW_START);     // Motor 5 (Pin 7)
-  testDualMotorsGentle(DUAL_START);                                 // Dual Motors (Pins 10 & 11)
-
-  Serial.println("\n--- STEP 2: ALL MOTORS TOGETHER DIAGNOSTIC ---");
-  testAllMotorsTogether();
-
-  Serial.println("--- DIAGNOSTICS COMPLETE. MOTORS HOLDING POSITION. ---");
+  // Trigger position setup immediately to force 90-degree upright stance
+  updateServos();
+  Serial.println("ARDUINO_READY");
 }
 
-// ---------------------------------------------------------------------------
-// MAIN MOTION LOOP (Empty to prevent continuous motion)
-// ---------------------------------------------------------------------------
 void loop() {
-  // Intentionally empty: Motors will stay still at their starting positions.
+  if (Serial.available() > 0) {
+    char key = Serial.read();
+
+    switch (key) {
+      // Motor 1: Base (A / D)
+      case 'a': case 'A': angleBase = constrain(angleBase - ANGLE_STEP, 0, 180); break;
+      case 'd': case 'D': angleBase = constrain(angleBase + ANGLE_STEP, 0, 180); break;
+
+      // Motor 2: Finger (Q / E)
+      case 'q': case 'Q': angleFinger = constrain(angleFinger - ANGLE_STEP, 0, 180); break;
+      case 'e': case 'E': angleFinger = constrain(angleFinger + ANGLE_STEP, 0, 180); break;
+
+      // Motor 3: Wrist (J / K)
+      case 'j': case 'J': angleWrist = constrain(angleWrist + ANGLE_STEP, 0, 180); break;
+      case 'k': case 'K': angleWrist = constrain(angleWrist - ANGLE_STEP, 0, 180); break;
+
+      // Motor 4: Arm (I / O)
+      case 'i': case 'I': angleArm = constrain(angleArm + ANGLE_STEP, 0, 180); break;
+      case 'o': case 'O': angleArm = constrain(angleArm - ANGLE_STEP, 0, 180); break;
+
+      // Motor 5: Elbow (M / N)
+      case 'm': case 'M': angleElbow = constrain(angleElbow + ANGLE_STEP, 0, 180); break;
+      case 'n': case 'N': angleElbow = constrain(angleElbow - ANGLE_STEP, 0, 180); break;
+
+      // Motor 6 & 7: Dual Opposing (W / S)
+      case 'w': case 'W': angleDual = constrain(angleDual + ANGLE_STEP, 0, 180); break;
+      case 's': case 'S': angleDual = constrain(angleDual - ANGLE_STEP, 0, 180); break;
+
+      default: return;
+    }
+
+    updateServos();
+    printStatus();
+  }
 }

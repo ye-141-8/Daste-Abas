@@ -2,12 +2,14 @@ import tkinter as tk
 import serial
 import time
 
+
 # ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
-ARDUINO_PORT = 'COM6'  # Update port to match your system
+ARDUINO_PORT = 'COM7'  # Update port to match your system
 BAUD_RATE = 9600
 STEP_ANGLE = 5
+
 
 try:
     arduino = serial.Serial(ARDUINO_PORT, BAUD_RATE, timeout=0.1)
@@ -18,10 +20,11 @@ except Exception as e:
     print("Ensure the Arduino IDE Serial Monitor is CLOSED.")
     exit()
 
+
 def send_command(char):
     arduino.write(char.encode('utf-8'))
     time.sleep(0.01)
-    
+   
     if arduino.in_waiting > 0:
         try:
             response = arduino.read(arduino.in_waiting).decode('utf-8', errors='ignore').strip()
@@ -29,6 +32,7 @@ def send_command(char):
                 print(f"[Arduino]: {response}")
         except Exception:
             pass
+
 
 # ---------------------------------------------------------------------------
 # CONTROL WINDOW
@@ -40,6 +44,7 @@ class RobotArmGUI:
         self.root.geometry("480x380")
         self.root.configure(bg="#222222")
 
+
         info_text = (
             "ROBOT ARM CONTROLLER ACTIVE\n\n"
             f"Step Angle: {STEP_ANGLE}° per press\n\n"
@@ -50,17 +55,20 @@ class RobotArmGUI:
             "• Motor 5 (Elbow - Ch 3):    [M] / [N]\n"
             "• Motor 6 & 7 (Dual Ch 10/11): [W] / [S]\n"
         )
-        
+       
         self.label = tk.Label(
             root, text=info_text, fg="#00FF66", bg="#222222",
             font=("Consolas", 10), justify="left", padx=20, pady=20
         )
         self.label.pack(fill="both", expand=True)
 
+
         self.root.bind("<Key>", self.on_key_press)
+
 
     def on_key_press(self, event):
         key = (event.char if event.char else event.keysym).lower()
+
 
         key_mappings = {
             'a': 'a', 'd': 'd',  # Base
@@ -71,8 +79,10 @@ class RobotArmGUI:
             'w': 'w', 's': 's'   # Dual
         }
 
+
         if key in key_mappings:
             send_command(key_mappings[key])
+
 
 if __name__ == "__main__":
     root = tk.Tk()
@@ -80,3 +90,4 @@ if __name__ == "__main__":
     root.mainloop()
     if 'arduino' in globals() and arduino.is_open:
         arduino.close()
+

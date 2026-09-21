@@ -64,7 +64,6 @@ void setServo(byte channel, int pulse) {
   Wire.endTransmission();
 }
 
-
 void setServoAngle(byte channel, int angle) {
   angle = constrain(angle, 0, 180);
   int pulse = map(angle, 0, 180, PULSE_MIN, PULSE_MAX);
@@ -168,4 +167,3 @@ void loop() {
     printStatus();
   }
 }
-

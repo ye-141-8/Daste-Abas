@@ -6,7 +6,7 @@ import time
 # ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
-ARDUINO_PORT = 'COM7'  # Update port to match your system
+ARDUINO_PORT = 'COM6'  # Update port to match your system
 BAUD_RATE = 9600
 STEP_ANGLE = 5
 

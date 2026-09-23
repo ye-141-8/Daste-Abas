@@ -42,13 +42,23 @@ Das Projekt besteht aus zwei Teilen:
 - **Teach-In-Player:** Positionen speichern, dann
   - **gesamte Sequenz** abspielen (optional Endlos-Schleife), oder
   - **eine einzelne ausgewählte Position** einmal abspielen
+- **Echtzeit-Aufnahme (REC):** Aufnahme ohne einzelnes Hinzufügen — `● REC` drücken, den Arm bewegen
+  (Slider, Tastatur oder Joystick), `■ Stop Aufn.` drücken → die gesamte zeitliche Bewegung wird
+  aufgezeichnet und mit `► Aufn. Abspielen` originalgetreu wiedergegeben
+- **Zeitanzeige:** Dauer jeder Aufnahme und Wiedergabe wird live angezeigt (`MM:SS`), auch bei der
+  klassischen Teach-In-Wiedergabe
+- **Joystick-Live-Anzeige:** ein Crosshair-Widget zeigt die aktuelle X/Y-Joystick-Position in Echtzeit
+- **Motor-Diagnose (Test):** `⚡ Teste Motoren` öffnet ein SciFi-Diagnose-Fenster, das **jeden Motor einzeln**
+  von ganz geschlossen (20°) zu ganz offen (160°) durchfährt und zur visuellen Bestätigung auffordert.
+  Die **Duo-Gegenmotoren werden als ein Eintrag gemeinsam getestet** — gedreht wird nur ein Wert, woraufhin
+  links/rechts automatisch **gespiegelt gegeneinander** laufen.
 - **Sanfte Bewegung:** Positionen werden in kleinen Interpolationsschritten statt springend angefahren
 - **Einstellbare Geschwindigkeit:** Geschwindigkeitsregler
 - **2D-Kinematik-Simulator** in Echtzeit
 - **3D-Simulator** (matplotlib), zeigt die Rotation der Basis um die Z-Achse
 - **Greifer-Anzeige:** visueller offen/geschlossen-Zustand + Winkelwert
 - **Live-Winkelanzeige** für alle Gelenke
-- **Gruppierte Toolbar** (Bearbeiten / Wiedergabe / Datei) mit einheitlichem Button-Design
+- **Gruppierte Toolbar** (Bearbeiten links / Wiedergabe + Aufnahme mittig übereinander / Datei rechts) mit einheitlichem Button-Design
 - **Konfigurierbarer serieller Port**, gespeichert in `robot_config.json`
 - **Statusleiste** mit Verbindungszustand
 - **Tastatursteuerung** für jedes Gelenk, 5° pro Tastendruck
@@ -142,6 +152,10 @@ Verbinden Sie Ihren echten Arm und bewegen Sie die Schieberegler oder nutzen Sie
 | Abspielen (Alle / Einzel) | Komplette Sequenz oder einen Schritt abspielen |
 | ■ Stop / Leertaste | Wiedergabe anhalten |
 | Endlos wiederholen | Sequenz in Schleife abspielen |
+| ● REC / ■ Stop Aufn. / ► Aufn. Abspielen | Echtzeit-Aufnahme aufzeichnen, beenden & wiedergeben |
+| Zeit-Anzeige | Dauer von Aufnahme & Wiedergabe (`MM:SS`) |
+| Joystick (links) | Live X/Y-Stellung des Joysticks |
+| ⚡ Teste Motoren | SciFi-Motor-Diagnose: Motoren durchfahren + bestätigen (Duo gespiegelt) |
 | Datei Laden / Speichern | Sequenzen speichern / laden (JSON) |
 | ⊕ Reset (90°) / `R` | Arm in die aufrechte Position zurückführen |
 
@@ -175,6 +189,7 @@ GUI und Firmware kommunizieren über seriell mit einfachen Textbefehlen:
 - Einzelne Zeichen (`a`, `d`, `q`, …) — ein Gelenk schrittweise verstellen
 - `R` — alle Winkel auf 90° zurücksetzen
 - Die Firmware meldet jeden Zustand als `POS:base,finger,wrist,arm,elbow,dual`
+- Die Firmware meldet die Roh-Joystick-Werte als `JS:x,y` für die Live-Anzeige in der GUI
 
 ---
 

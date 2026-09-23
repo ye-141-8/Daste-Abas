@@ -41,13 +41,23 @@ The project is split into two parts:
 - **Teach-in sequence player:** save positions, then
   - play the **entire sequence** (with optional endless loop), or
   - play **a single selected position** once
+- **Real-time recording (REC):** no need to add positions one by one — press `● REC`, move the arm
+  (slider, keyboard or joystick), then press `■ Stop Aufn.` and the whole time-based motion is captured
+  and played back faithfully with `► Aufn. Abspielen`
+- **Time display:** the duration of every recording and playback is shown live (`MM:SS`), including the
+  classic teach-in playback
+- **Live joystick indicator:** a crosshair widget shows the current X/Y joystick position in real time
+- **Motor diagnosis (test):** `⚡ Teste Motoren` opens a sci-fi diagnosis window that sweeps **each motor
+  individually** from fully closed (20°) to fully open (160°) and asks for visual confirmation. The
+  **Dual opposing motors are tested as a single entry** — only one value is driven, while left/right run
+  **mirrored against each other** automatically.
 - **Smooth motion:** positions are approached in small interpolated steps instead of jumping
 - **Adjustable speed:** playback speed slider
 - **2D kinematics simulator** rendered in real time
 - **3D simulator** (matplotlib) showing the base rotating around the Z axis
 - **Gripper indicator:** visual open/closed state + angle readout
 - **Live angle readout** for all joints
-- **Grouped toolbar** (Edit / Playback / File) and consistent button styling
+- **Grouped toolbar** (Edit left / Playback + Record stacked in the middle / File right) and consistent button styling
 - **Configurable serial port** persisted to `robot_config.json`
 - **Status bar** with connection state
 - **Keyboard control** for every joint, 5° per press
@@ -141,6 +151,10 @@ Connect your physical arm, then move the sliders or use the keys below.
 | Abspielen (Alle / Einzel) | Play the full sequence or one step |
 | ■ Stop / Leertaste | Halt playback |
 | Endlos wiederholen | Loop the sequence |
+| ● REC / ■ Stop Aufn. / ► Aufn. Abspielen | Record real-time motion, stop & play it back |
+| Time display | Duration of recording & playback (`MM:SS`) |
+| Joystick (left) | Live X/Y joystick position |
+| ⚡ Teste Motoren | Sci-fi motor diagnosis: sweep motors + confirm (Dual mirrored) |
 | Datei Laden / Speichern | Save / load sequences (JSON) |
 | ⊕ Reset (90°) / `R` | Return the arm to the upright stance |
 
@@ -174,6 +188,7 @@ The GUI and firmware talk over serial with simple text commands:
 - Single character keys (`a`, `d`, `q`, …) — nudge a single joint
 - `R` — reset all angles to 90°
 - Firmware reports each state as `POS:base,finger,wrist,arm,elbow,dual`
+- Firmware reports the raw joystick values as `JS:x,y` for the live GUI indicator
 
 ---
 

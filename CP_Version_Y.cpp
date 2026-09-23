@@ -210,6 +210,11 @@ void loop() {
   
   int yVal = analogRead(JOY_Y);
 
+  // Report raw joystick values to the GUI (live indicator)
+  Serial.print("JS:");
+  Serial.print(xVal); Serial.print(",");
+  Serial.println(yVal);
+
   bool btnA = (digitalRead(BTN_A) == LOW);
   bool btnB = (digitalRead(BTN_B) == LOW);
   bool btnC = (digitalRead(BTN_C) == LOW);

@@ -146,7 +146,17 @@ void processSerialKey(char key) {
     case 'n': case 'N': angleElbow = constrain(angleElbow - ANGLE_STEP, 0, 180); break;
     case 'w': case 'W': angleDual = constrain(angleDual + ANGLE_STEP, 0, 180); break;
     case 's': case 'S': angleDual = constrain(angleDual - ANGLE_STEP, 0, 180); break;
+    case 'r': case 'R': resetServos(); break;
   }
+}
+
+void resetServos() {
+  angleBase   = 90;
+  angleFinger = 90;
+  angleWrist  = 90;
+  angleArm    = 90;
+  angleElbow  = 90;
+  angleDual   = 90;
 }
 
 void parseDirectPosition(String data) {
@@ -197,6 +207,7 @@ void loop() {
 
   // 2. Check Joystick Controls
   int xVal = analogRead(JOY_X);
+  
   int yVal = analogRead(JOY_Y);
 
   bool btnA = (digitalRead(BTN_A) == LOW);

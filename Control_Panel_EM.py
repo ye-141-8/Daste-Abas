@@ -199,6 +199,35 @@ class SerialManager:
             pass
 
 
+class SimulatedManager:
+    """Fake serial backend so the UI starts and runs fully without hardware.
+
+    Mirrors the SerialManager API used by the GUI; commands simply update an
+    in-memory position so the arm moves on screen for demo/testing.
+    """
+    sim = True
+
+    def __init__(self, port='COM7 (no Arduino - simulation)'):
+        self.port = port
+        self.connected = True
+        self.last_pos_time = time.time()
+        self._state = {j: 90 for j in JOINT_ORDER}
+        self.log_q = queue.Queue()
+
+    def get_state(self):
+        return dict(self._state), self.connected
+
+    def send_abs(self, pos):
+        self._state.update(pos)
+        self.last_pos_time = time.time()
+
+    def request_position(self):
+        self.last_pos_time = time.time()
+
+    def close(self):
+        pass
+
+
 # ===========================================================================
 # KINEMATICS
 # ===========================================================================
@@ -1235,16 +1264,20 @@ class RobotArmUI:
             drained += 1
         try:
             self.display, self.connected = self.mgr.get_state()
-            live = (time.time() - self.mgr.last_pos_time) < 1.5
-            if not self.connected:
-                text, col = '● LOST', DANGER
-            elif live:
-                text, col = '● CONNECTED', OK
+            if getattr(self.mgr, 'sim', False):
+                # No hardware: reflect the commanded position so the arm moves
+                self.status.configure(text='● SIMULATION (no Arduino)', text_color=ACCENT2)
             else:
-                text, col = '● NO DATA', WARN
-            self.status.configure(text=f'{self.port} — {text}', text_color=col)
-            if self.connected and not live:
-                self.mgr.request_position()
+                live = (time.time() - self.mgr.last_pos_time) < 1.5
+                if not self.connected:
+                    text, col = '● LOST', DANGER
+                elif live:
+                    text, col = '● CONNECTED', OK
+                else:
+                    text, col = '● NO DATA', WARN
+                self.status.configure(text=f'{self.port} — {text}', text_color=col)
+                if self.connected and not live:
+                    self.mgr.request_position()
             self._draw_arm()
             if self.joystick['active'] and self.busy == 0:
                 self._joy_apply_vel()
@@ -1304,18 +1337,16 @@ class RobotArmUI:
 # ENTRY
 # ===========================================================================
 def main():
-    import sys
+    # Auto-detect: start with real hardware if the port is available,
+    # otherwise run in silent simulation mode (no dialog).
     try:
         manager = SerialManager(ARDUINO_PORT, BAUD_RATE)
     except Exception as e:
-        messagebox.showerror(
-            'Connection failed',
-            f'Could not open {ARDUINO_PORT}: {e}\n\n'
-            'Check the COM port and close the Arduino IDE Serial Monitor.')
-        sys.exit(1)
+        print(f'Arduino not found on {ARDUINO_PORT} ({e}); running in simulation mode.')
+        manager = SimulatedManager()
     root = ctk.CTk()
     app = RobotArmUI(root, manager)
-    app.port = ARDUINO_PORT
+    app.port = getattr(manager, 'port', ARDUINO_PORT)
     root.mainloop()
 
 

@@ -149,7 +149,7 @@ and forwards each pressed key to the Arduino.
 
 ---
 
-## Web / Desktop Control UI (`robot_arm_ui.py`)
+## Desktop Control UI (`Control_Panel_EM.py`)
 
 A pure Python desktop dashboard built on [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
 (a modern dark-theme Tkinter wrapper — no HTML/CSS/JS). It talks to the Arduino firmware
@@ -161,8 +161,12 @@ A pure Python desktop dashboard built on [CustomTkinter](https://github.com/TomS
 - **2D side-view kinematics** — industrial elevation view of the whole arm: base tower,
   ground grid, joint balls with live angle chips, and a dashed "ghost" of the commanded
   target vs. the actual confirmed position.
+- **Simulation mode (no hardware needed)** — the app starts whether or not the Arduino is
+  connected. It auto-detects the link: with the board on `COM7` it controls the real arm
+  (`● CONNECTED`); without it, it silently runs a virtual arm (`● SIMULATION (no Arduino)`)
+  so you can test the whole UI anytime, no dialog boxes.
 - **Dual control** — keyboard shortcuts, per-joint sliders / `+` / `−` buttons / exact-degree
-  input, and a mouse-driven virtual joystick (Base X / Shoulder Y).
+  input, and a mouse-driven virtual joystick with **A/B/C/D mode buttons** (Base X / Shoulder Y).
 - **Motor test** — pick a joint and run an automatic sweep `0° → 180° → 0°`.
 - **Motion recorder** — flip `● Record` on, move the arm manually (keys/sliders/joystick),
   and every movement is logged with timestamps; then play it back automatically with
@@ -177,15 +181,15 @@ A pure Python desktop dashboard built on [CustomTkinter](https://github.com/TomS
 
 ```bash
 pip install pyserial customtkinter
-python robot_arm_ui.py        # adjust ARDUINO_PORT (== COM7) in the file if needed
+python Control_Panel_EM.py        # port is COM7 (see ARDUINO_PORT in the file)
 ```
 
-Requires the Arduino to run [`Control_Panel.cpp`](Control_Panel.cpp), which now also
-implements **smooth easing** (`SMOOTH_EASE` / `EASE_SNAP` at the top — set `SMOOTH_EASE`
-to `1.0` for instant motion) and the **position-request command `?`** (used by the
-"Re-sync" button and on missing serial data). Re-upload the firmware to apply these.
-Close the Arduino IDE Serial Monitor before starting the app. Keyboard layout matches
-the firmware: Base `A/D`, Finger `Q/E`, Wrist `K/J`, Arm `O/I`, Elbow `N/M`, Shoulder `S/W`.
+If the Arduino (running [`Control_Panel.cpp`](Control_Panel.cpp)) is connected on `COM7` the
+app drives the real arm; otherwise it starts in **simulation mode**. The firmware implements
+smooth easing (`SMOOTH_EASE` / `EASE_SNAP` at the top — set `SMOOTH_EASE` to `1.0` for instant
+motion) and the position-request command `?` (used by the "Re-sync" button). Close the Arduino
+IDE Serial Monitor before starting the app. Keyboard layout matches the firmware:
+Base `A/D`, Finger `Q/E`, Wrist `K/J`, Arm `O/I`, Elbow `N/M`, Shoulder `S/W`.
 
 ## License
 

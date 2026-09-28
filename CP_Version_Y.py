@@ -2,6 +2,7 @@ import math
 import json
 import time
 import os
+import queue
 import threading
 import tkinter as tk
 from tkinter import messagebox, filedialog
@@ -74,6 +75,10 @@ class RobotArmGUI:
         self.stop_event = threading.Event()
         self.serial_conn = None
         self.joy_x, self.joy_y = 512, 512
+        self.serial_lock = threading.Lock()
+        self.ui_queue = queue.Queue()
+        self.last_3d_draw = 0.0
+        self.last_joy_draw = 0.0
 
         self.connect_arduino()
 
@@ -96,6 +101,7 @@ class RobotArmGUI:
         self.stop_thread = False
         self.read_thread = threading.Thread(target=self.poll_serial, daemon=True)
         self.read_thread.start()
+        self.root.after(40, self.poll_ui_queue)
 
     def connect_arduino(self):
         cfg = load_config()
@@ -440,14 +446,19 @@ class RobotArmGUI:
                 self.draw_3d()
             self.update_live()
 
-    def send_position_to_arduino(self):
-        if self.serial_conn and self.serial_conn.is_open:
-            cmd = (f"P:{self.angles['Base']},{self.angles['Finger']},{self.angles['Wrist']},"
-                   f"{self.angles['Arm']},{self.angles['Elbow']},{self.angles['Dual']}\n")
+    def write_serial(self, data):
+        if not (self.serial_conn and self.serial_conn.is_open):
+            return
+        with self.serial_lock:
             try:
-                self.serial_conn.write(cmd.encode('utf-8'))
+                self.serial_conn.write(data)
             except Exception as e:
                 print(f"Übertragungsfehler: {e}")
+
+    def send_position_to_arduino(self):
+        cmd = (f"P:{self.angles['Base']},{self.angles['Finger']},{self.angles['Wrist']},"
+               f"{self.angles['Arm']},{self.angles['Elbow']},{self.angles['Dual']}\n")
+        self.write_serial(cmd.encode('utf-8'))
 
     def poll_serial(self):
         while not self.stop_thread:
@@ -456,34 +467,60 @@ class RobotArmGUI:
                     if self.serial_conn.in_waiting > 0:
                         line = self.serial_conn.readline().decode('utf-8', errors='ignore').strip()
                         if line.startswith("POS:"):
-                            vals = list(map(int, line.replace("POS:", "").split(",")))
+                            try:
+                                vals = list(map(int, line.replace("POS:", "").split(",")))
+                            except ValueError:
+                                vals = []
                             if len(vals) == 6:
-                                self.angles["Base"] = vals[0]
-                                self.angles["Finger"] = vals[1]
-                                self.angles["Wrist"] = vals[2]
-                                self.angles["Arm"] = vals[3]
-                                self.angles["Elbow"] = vals[4]
-                                self.angles["Dual"] = vals[5]
-                                self.root.after(0, self.sync_ui_state)
+                                self.ui_queue.put(("pos", vals))
                         elif line.startswith("JS:"):
                             parts = line.replace("JS:", "").split(",")
                             if len(parts) == 2:
                                 try:
-                                    self.joy_x = int(parts[0])
-                                    self.joy_y = int(parts[1])
-                                    self.root.after(0, self.update_joystick_display)
+                                    x, y = int(parts[0]), int(parts[1])
+                                    self.ui_queue.put(("joy", x, y))
                                 except ValueError:
                                     pass
                 except Exception:
                     pass
-            time.sleep(0.05)
+            time.sleep(0.02)
+
+    def poll_ui_queue(self):
+        """Runs on the Tk main thread; drains serial updates from the queue
+        and applies them to the UI without touching Tk from another thread.
+        Called periodically via root.after()."""
+        try:
+            while True:
+                item = self.ui_queue.get_nowait()
+                kind = item[0]
+                if kind == "pos":
+                    vals = item[1]
+                    self.angles["Base"] = vals[0]
+                    self.angles["Finger"] = vals[1]
+                    self.angles["Wrist"] = vals[2]
+                    self.angles["Arm"] = vals[3]
+                    self.angles["Elbow"] = vals[4]
+                    self.angles["Dual"] = vals[5]
+                    self.sync_ui_state()
+                elif kind == "joy":
+                    self.joy_x = item[1]
+                    self.joy_y = item[2]
+                    if time.time() - self.last_joy_draw > 0.1:
+                        self.update_joystick_display()
+                        self.last_joy_draw = time.time()
+        except queue.Empty:
+            pass
+        self.root.after(40, self.poll_ui_queue)
 
     def sync_ui_state(self):
         for key, val in self.angles.items():
             self.sliders[key].set(val)
         self.draw_simulation()
         if self.fig is not None:
-            self.draw_3d()
+            now = time.time()
+            if now - self.last_3d_draw >= 0.15:
+                self.draw_3d()
+                self.last_3d_draw = now
         self.update_live()
 
     def update_joystick_display(self):
@@ -721,7 +758,9 @@ class RobotArmGUI:
 
     def _apply_position(self, pos):
         self.angles = dict(pos)
-        self.root.after(0, self.sync_ui_state)
+        vals = [pos["Base"], pos["Finger"], pos["Wrist"],
+                pos["Arm"], pos["Elbow"], pos["Dual"]]
+        self.ui_queue.put(("pos", vals))
         self.send_position_to_arduino()
 
     def play_single(self, pos):
@@ -936,17 +975,13 @@ class RobotArmGUI:
             self._send_test_pos(None, 90)
 
     def _send_test_pos(self, joint, ang):
-        if self.serial_conn and self.serial_conn.is_open:
-            keep = {"Base": 90, "Finger": 90, "Wrist": 90,
-                    "Arm": 90, "Elbow": 90, "Dual": 90}
-            if joint is not None:
-                keep[joint] = ang
-            cmd = (f"P:{keep['Base']},{keep['Finger']},{keep['Wrist']},"
-                   f"{keep['Arm']},{keep['Elbow']},{keep['Dual']}\n")
-            try:
-                self.serial_conn.write(cmd.encode('utf-8'))
-            except Exception as e:
-                print(f"Test-Übertragungsfehler: {e}")
+        keep = {"Base": 90, "Finger": 90, "Wrist": 90,
+                "Arm": 90, "Elbow": 90, "Dual": 90}
+        if joint is not None:
+            keep[joint] = ang
+        cmd = (f"P:{keep['Base']},{keep['Finger']},{keep['Wrist']},"
+               f"{keep['Arm']},{keep['Elbow']},{keep['Dual']}\n")
+        self.write_serial(cmd.encode('utf-8'))
 
 
 if __name__ == "__main__":

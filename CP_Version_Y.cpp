@@ -210,10 +210,15 @@ void loop() {
   
   int yVal = analogRead(JOY_Y);
 
-  // Report raw joystick values to the GUI (live indicator)
-  Serial.print("JS:");
-  Serial.print(xVal); Serial.print(",");
-  Serial.println(yVal);
+  // Report raw joystick values to the GUI (live indicator).
+  // Throttled to avoid flooding the serial line (only every 10th pass).
+  static int jsTick = 0;
+  if (++jsTick >= 10) {
+    jsTick = 0;
+    Serial.print("JS:");
+    Serial.print(xVal); Serial.print(",");
+    Serial.println(yVal);
+  }
 
   bool btnA = (digitalRead(BTN_A) == LOW);
   bool btnB = (digitalRead(BTN_B) == LOW);

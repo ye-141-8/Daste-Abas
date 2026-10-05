@@ -49,7 +49,7 @@ ctk.set_default_color_theme('blue')
 # ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
-ARDUINO_PORT = 'COM7'          # COM port of the Arduino
+ARDUINO_PORT = 'COM6'          # COM port of the Arduino
 BAUD_RATE = 9600               # must match Control_Panel.cpp
 STEP_ANGLE = 5                 # degrees per keyboard/shortcut press
 

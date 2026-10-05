@@ -16,10 +16,10 @@ captures the core idea: a multi-joint arm with a gripper that the operator steer
 
 The project is split into two parts:
 
-| File | Language | Purpose |
+| File            | Language      | Purpose |
 | --- | --- | --- |
 | `DasteAbas.cpp` | C++ (Arduino) | Firmware: reads serial keypresses and sets each servo angle |
-| `arm_gui.py` | Python | Desktop GUI: forwards keyboard input to the Arduino over serial |
+| `arm_gui.py`    | Python        | Desktop GUI: forwards keyboard input to the Arduino over serial |
 
 ---
 

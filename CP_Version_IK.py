@@ -35,6 +35,19 @@ GREIFER_OFFEN = 180
 GREIFER_ZU = 30
 DEFAULT_BAUD = 9600
 
+# ===========================================================================
+# ⚙️ 2D REICHWEITE-MODELL (LENKEN ÜBER R & Z) — ye-141-8 / v3.5-Ebene
+# ===========================================================================
+L_BASE    = 0.00   # Basishöhe
+L1_DUAL   = 22.00  # Oberarm (Dual bis Arm)
+L2_ARM    = 10.00  # Unterarm (Arm bis Elbow)
+L3_ELBOW  = 7.00   # Handgelenk-Segment (Elbow bis Wrist)
+L4_FINGER = 15.00  # Greifer (Wrist bis Fingerspitze)
+
+L_EFF = L2_ARM + L3_ELBOW + L4_FINGER  # 32.0 cm
+R_MAX = L1_DUAL + L_EFF                 # 54.0 cm (Max Streckung)
+R_MIN = abs(L1_DUAL - L_EFF)            # 10.0 cm (Min Nahgrenze)
+
 # Gelenkreihenfolge im Protokoll (muss der Firmware "P:"-Format entsprechen)
 JOINT_ORDER = ['Base', 'Finger', 'Wrist', 'Arm', 'Elbow', 'Dual']
 
@@ -375,7 +388,7 @@ class SciFiRobotGUI(QMainWindow):
         self.sidebar.setFixedWidth(170)
         for text in ["🕹  Manuell", "🎯  Koordinaten", "🔄  Pick & Drop",
                      "🔧  Motor-Test", "🎬  Recorder", "🗒  Sequencer",
-                     "💾  Presets", "🖥  Konsole & Einstellungen"]:
+                     "💾  Presets", "🎛  Reichweite-R/Z & THROW", "🖥  Konsole & Einstellungen"]:
             item = QListWidgetItem(text)
             self.sidebar.addItem(item)
         self.sidebar.currentRowChanged.connect(self._on_sidebar_changed)
@@ -390,10 +403,11 @@ class SciFiRobotGUI(QMainWindow):
         self._page_recorder = self._build_recorder_page()
         self._page_sequencer = self._build_sequencer_page()
         self._page_presets = self._build_presets_page()
+        self._page_rz = self._build_rz_page()
         self._page_settings = self._build_settings_page()
         for p in (self._page_manuell, self._page_koordinaten, self._page_pickdrop,
                   self._page_test, self._page_recorder, self._page_sequencer,
-                  self._page_presets, self._page_settings):
+                  self._page_presets, self._page_rz, self._page_settings):
             self.stack.addWidget(p)
         self.sidebar.setCurrentRow(0)
         body.addWidget(self.stack, 3)
@@ -805,6 +819,224 @@ class SciFiRobotGUI(QMainWindow):
         c.addWidget(g2)
         c.addStretch(0)
         return page
+
+    # ----------------------------- Reichweite-R/Z & THROW (ye-141-8) -----------------------------
+    def _build_rz_page(self):
+        page, c = self._page_container("REICHWEITE-R/Z & AUTONOM THROW", '#ff6a00')
+
+        # 1. ECHTZEIT TRACKER (LIVE POS & KOPIEREN)
+        tracker_box = QGroupBox("📍 LIVE TRACKER & KOORDINATEN MONITORING")
+        tracker_layout = QGridLayout(tracker_box)
+        self.lbl_curr_xyz = QLabel("X: 0.0 cm | Y: 0.0 cm | Z: 0.0 cm | R: 0.0 cm")
+        self.lbl_curr_xyz.setStyleSheet("color: #00ffcc; font-size: 12px; font-weight: bold;")
+        tracker_layout.addWidget(self.lbl_curr_xyz, 0, 0, 1, 2)
+        self.lbl_curr_angles = QLabel("Winkel: Base: 90° | Dual: 90° | Arm: 90° | Elbow: 90° | Wrist: 90° | Finger: 180°")
+        self.lbl_curr_angles.setStyleSheet("color: #00a8ff; font-size: 11px;")
+        tracker_layout.addWidget(self.lbl_curr_angles, 1, 0, 1, 2)
+        b_cp = QPushButton("📋 POS ALS PICK SPEICHERN")
+        b_cp.clicked.connect(self.copy_to_pick)
+        b_cd = QPushButton("📋 POS ALS DROP SPEICHERN")
+        b_cd.clicked.connect(self.copy_to_drop)
+        tracker_layout.addWidget(b_cp, 2, 0)
+        tracker_layout.addWidget(b_cd, 2, 1)
+        c.addWidget(tracker_box)
+
+        # 2. ENTKOPPELTE ARM- & ENDEFFECTOR-STEUERUNG
+        ctrl_box = QGroupBox("🎯 STEUERUNG (BASIS, REICHWEITE, WRIST & FINGER)")
+        ctrl_layout = QGridLayout(ctrl_box)
+        ctrl_layout.addWidget(QLabel("Basis Grad (0-180°):"), 0, 0)
+        self.txt_base_angle = QLineEdit("90")
+        ctrl_layout.addWidget(self.txt_base_angle, 0, 1)
+        ctrl_layout.addWidget(QLabel("Reichweite R (cm) & Höhe Z (cm):"), 1, 0)
+        rz_layout = QHBoxLayout()
+        self.txt_reach_r = QLineEdit("25.0")
+        self.txt_height_z = QLineEdit("10.0")
+        rz_layout.addWidget(self.txt_reach_r)
+        rz_layout.addWidget(QLabel("Z:"))
+        rz_layout.addWidget(self.txt_height_z)
+        ctrl_layout.addLayout(rz_layout, 1, 1)
+
+        ctrl_layout.addWidget(QLabel("Wrist (Grad 0-180°):"), 2, 0)
+        wrist_v_layout = QVBoxLayout()
+        self.txt_wrist_deg = QLineEdit("90")
+        wrist_v_layout.addWidget(self.txt_wrist_deg)
+        wrist_btn_layout = QHBoxLayout()
+        for lbl, val in [("0° Vert", "0"), ("45° DiagL", "45"), ("90° Horiz", "90"), ("135° DiagR", "135")]:
+            b = QPushButton(lbl)
+            b.clicked.connect(lambda _, v=val: self.txt_wrist_deg.setText(v))
+            wrist_btn_layout.addWidget(b)
+        wrist_v_layout.addLayout(wrist_btn_layout)
+        ctrl_layout.addLayout(wrist_v_layout, 2, 1)
+
+        ctrl_layout.addWidget(QLabel("Finger / Greifer (Grad 0-180°):"), 3, 0)
+        finger_v_layout = QVBoxLayout()
+        self.txt_finger_deg = QLineEdit("180")
+        finger_v_layout.addWidget(self.txt_finger_deg)
+        finger_btn_layout = QHBoxLayout()
+        for lbl, val in [("✊ Zu (0°)", "0"), ("🤏 Halb (90°)", "90"), ("🖐️ Offen (180°)", "180")]:
+            b = QPushButton(lbl)
+            b.clicked.connect(lambda _, v=val: self.txt_finger_deg.setText(v))
+            finger_btn_layout.addWidget(b)
+        finger_v_layout.addLayout(finger_btn_layout)
+        ctrl_layout.addLayout(finger_v_layout, 3, 1)
+
+        b_move = QPushButton("▶ PARAMETER ANFAHREN")
+        b_move.clicked.connect(self.on_move_decoupled_clicked)
+        ctrl_layout.addWidget(b_move, 4, 0, 1, 2)
+        c.addWidget(ctrl_box)
+
+        # 3. PICK, ROTATE & DROP / THROW SEQUENZ
+        throw_box = QGroupBox("📦 AUTONOM PICK, ROTATE & ABWERFEN / DROP")
+        throw_layout = QGridLayout(throw_box)
+        throw_layout.addWidget(QLabel("Pick: Base°, R cm, Z cm, Wrist°:"), 0, 0)
+        self.txt_pick_params = QLineEdit("45, 25.0, 5.0, 90")
+        throw_layout.addWidget(self.txt_pick_params, 0, 1)
+        throw_layout.addWidget(QLabel("Drop: Base°, R cm, Z cm, Wrist°:"), 1, 0)
+        self.txt_drop_params = QLineEdit("135, 25.0, 20.0, 90")
+        throw_layout.addWidget(self.txt_drop_params, 1, 1)
+        throw_layout.addWidget(QLabel("Greif-Winkel (Finger Grad 0-180°):"), 2, 0)
+        self.txt_throw_finger_deg = QLineEdit("60")
+        throw_layout.addWidget(self.txt_throw_finger_deg, 2, 1)
+        b_exec = QPushButton("💥 OBJEKT GREIFEN, DREHEN & ABWERFEN")
+        b_exec.clicked.connect(self.execute_pick_and_throw)
+        throw_layout.addWidget(b_exec, 3, 0, 1, 2)
+        c.addWidget(throw_box)
+
+        c.addStretch(0)
+        return page
+
+    # ==================================================================
+    # REICHWEITE-R/Z & THROW HANDLER (ye-141-8 / v3.5-Ebene)
+    # ==================================================================
+    def _refresh_rz_tracker(self):
+        b_rad = math.radians(self.angles["Base"] - 90.0)
+        s_rad = math.radians(self.angles["Arm"])
+        e_rad = math.radians(180.0 - self.angles["Elbow"])
+        r_arm = L1_DUAL * math.cos(s_rad) + L_EFF * math.cos(s_rad - e_rad)
+        x = round(r_arm * math.cos(b_rad), 2)
+        y = round(r_arm * math.sin(b_rad), 2)
+        z = round(max(0.0, L_BASE + L1_DUAL * math.sin(s_rad) + L_EFF * math.sin(s_rad - e_rad)), 2)
+        self.current_r = round(r_arm, 2)
+        self.current_xyz = (x, y, z)
+        if self.lbl_curr_xyz is not None:
+            self.lbl_curr_xyz.setText(f"X: {x} cm | Y: {y} cm | Z: {z} cm | R: {self.current_r} cm")
+            self.lbl_curr_angles.setText(
+                f"Winkel: Base: {self.angles['Base']}° | Dual: {self.angles['Dual']}° | "
+                f"Arm: {self.angles['Arm']}° | Elbow: {self.angles['Elbow']}° | "
+                f"Wrist: {self.angles['Wrist']}° | Finger: {self.angles['Finger']}°")
+
+    def copy_to_pick(self):
+        b = self.angles["Base"]
+        w = self.angles["Wrist"]
+        self._refresh_rz_tracker()
+        str_val = f"{b}, {self.current_r:.1f}, {self.current_xyz[2]:.1f}, {w}"
+        self.txt_pick_params.setText(str_val)
+        self.log(f"Position in Pick-Feld übernommen: {str_val}")
+
+    def copy_to_drop(self):
+        b = self.angles["Base"]
+        w = self.angles["Wrist"]
+        self._refresh_rz_tracker()
+        str_val = f"{b}, {self.current_r:.1f}, {self.current_xyz[2]:.1f}, {w}"
+        self.txt_drop_params.setText(str_val)
+        self.log(f"Position in Drop-Feld übernommen: {str_val}")
+
+    def calculate_2d_ik(self, base_deg, r_cm, z_cm, wrist_deg=90, finger_deg=180):
+        z_w = z_cm - L_BASE
+        d = math.sqrt(r_cm**2 + z_w**2)
+        if d > R_MAX:
+            return False, f"Reichweite zu groß ({round(d,1)} cm > {R_MAX} cm)!", None
+        if d < R_MIN:
+            return False, f"Zu nah an Basis ({round(d,1)} cm < {R_MIN} cm)!", None
+        cos_elbow = (L1_DUAL**2 + L_EFF**2 - d**2) / (2 * L1_DUAL * L_EFF)
+        cos_elbow = max(-1.0, min(1.0, cos_elbow))
+        angle_elbow = math.degrees(math.acos(cos_elbow))
+        beta = math.atan2(z_w, r_cm)
+        cos_alpha = (L1_DUAL**2 + d**2 - L_EFF**2) / (2 * L1_DUAL * d)
+        cos_alpha = max(-1.0, min(1.0, cos_alpha))
+        alpha = math.acos(cos_alpha)
+        angle_shoulder = math.degrees(beta + alpha)
+        base_deg = max(0, min(180, int(round(base_deg))))
+        wrist_deg = max(0, min(180, int(round(wrist_deg))))
+        finger_deg = max(0, min(180, int(round(finger_deg))))
+        target_angles = {
+            "Base": base_deg,
+            "Dual": int(round(max(0, min(180, 180.0 - angle_shoulder)))),
+            "Arm": int(round(max(0, min(180, angle_shoulder)))),
+            "Elbow": int(round(max(0, min(180, 180.0 - angle_elbow)))),
+            "Wrist": wrist_deg,
+            "Finger": finger_deg,
+        }
+        rad_b = math.radians(base_deg - 90.0)
+        p0 = [0, 0, 0]
+        p1 = [0, 0, L_BASE]
+        p2 = [
+            p1[0] + L1_DUAL * math.cos(beta + alpha) * math.cos(rad_b),
+            p1[1] + L1_DUAL * math.cos(beta + alpha) * math.sin(rad_b),
+            p1[2] + L1_DUAL * math.sin(beta + alpha),
+        ]
+        p4 = [r_cm * math.cos(rad_b), r_cm * math.sin(rad_b), z_cm]
+        return True, target_angles, (p0, p1, p2, p4)
+
+    def on_move_decoupled_clicked(self):
+        try:
+            b_deg = float(self.txt_base_angle.text().strip())
+            r_cm = float(self.txt_reach_r.text().strip())
+            z_cm = float(self.txt_height_z.text().strip())
+            w_deg = float(self.txt_wrist_deg.text().strip())
+            f_deg = float(self.txt_finger_deg.text().strip())
+        except ValueError:
+            QMessageBox.warning(self, "Fehler", "Ungültige Zahlen im Eingabefeld!")
+            return
+        ok, target, pts = self.calculate_2d_ik(b_deg, r_cm, z_cm, w_deg, f_deg)
+        if ok:
+            self.log(f"Fahre zu: Base={b_deg}°, R={r_cm}cm, Z={z_cm}cm, Wrist={w_deg}°, Finger={f_deg}°")
+            threading.Thread(target=self.move_smoothly, args=(target, pts), daemon=True).start()
+        else:
+            self.log(f"❌ {target}")
+            QMessageBox.critical(self, "IK Fehler", target)
+
+    def execute_pick_and_throw(self):
+        try:
+            p_parts = [float(i) for i in self.txt_pick_params.text().split(",")]
+            d_parts = [float(i) for i in self.txt_drop_params.text().split(",")]
+            f_grip_deg = float(self.txt_throw_finger_deg.text().strip())
+        except Exception:
+            QMessageBox.warning(self, "Fehler", "Format: 'Base, R, Z, Wrist' z.B.: '45, 25.0, 5.0, 90'")
+            return
+        p_base, p_r, p_z, p_w = p_parts
+        d_base, d_r, d_z, d_w = d_parts
+        ok1, ik_pick, pts_p = self.calculate_2d_ik(p_base, p_r, p_z, p_w, 180)
+        ok2, ik_drop, pts_d = self.calculate_2d_ik(d_base, d_r, d_z, d_w, f_grip_deg)
+        if not ok1 or not ok2:
+            QMessageBox.critical(self, "IK Fehler", "Eine der Positionen liegt außerhalb der Reichweite!")
+            return
+
+        def sequence():
+            self.log("🚀 STARTE PICK & THROW SEQUENZ...")
+            ik_pick["Finger"] = 180
+            self.move_smoothly(ik_pick, pts_p)
+            time.sleep(0.4)
+            ik_pick["Finger"] = int(f_grip_deg)
+            self._send_angles(ik_pick)
+            self.sig_pose.emit(dict(ik_pick), None)
+            self.log(f"Greife Objekt mit Finger={f_grip_deg}°...")
+            time.sleep(0.5)
+            _, ik_lift, pts_l = self.calculate_2d_ik(p_base, p_r, p_z + 10.0, p_w, f_grip_deg)
+            self.move_smoothly(ik_lift, pts_l)
+            ik_drop["Finger"] = int(f_grip_deg)
+            self.move_smoothly(ik_drop, pts_d)
+            self.log(f"Gedreht zu Base={d_base}° auf Abwurf-Höhe Z={d_z}cm.")
+            time.sleep(0.4)
+            ik_drop["Finger"] = 180
+            self._send_angles(ik_drop)
+            self.sig_pose.emit(dict(ik_drop), None)
+            self.log("💥 OBJEKT ABGEWORFEN / FALLENGELASSEN!")
+            time.sleep(0.5)
+            self.reset_all_servos()
+            self._refresh_rz_tracker()
+
+        threading.Thread(target=sequence, daemon=True).start()
 
     # ==================================================================
     # SEITENLEISTE & STACK

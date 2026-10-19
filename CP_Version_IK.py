@@ -32,8 +32,30 @@ L3_CM = 10.00  # Unterarm: Abstand Ellbogen-Motor bis Handgelenk-Motor
 L4_CM = 6.00   # Greifer: Abstand Handgelenk-Motor bis Greiferspitze
 
 GREIFER_OFFEN = 180
-GREIFER_ZU = 30
+GREIFER_ZU = 30                      # Finger-Winkel bei geschlossenem Greifer (0 cm Öffnung)
+GRIPPER_MAX_GAP_CM = 6.0             # Öffnung (cm) bei vollständig geöffnetem Greifer (180°)
+GREIFER_WINKEL_SPANNE = (GREIFER_OFFEN - GREIFER_ZU)   # nutzbarer Winkelbereich
 DEFAULT_BAUD = 9600
+
+
+def width_to_finger_angle(width_cm, snap=True):
+    """Rechnet eine gewünschte Greifer-Öffnung (cm) in den Finger-Servo-Winkel um.
+
+    Lineares Modell: geschlossen (GREIFER_ZU) = 0 cm, offen (180°) = GRIPPER_MAX_GAP_CM.
+    Gibt den geclamp-ten Winkel (0–180°) zurück. Mit snap=True wird auf ganze Grade gerundet.
+    """
+    w = float(max(0.0, min(GRIPPER_MAX_GAP_CM, width_cm)))
+    ratio = w / GRIPPER_MAX_GAP_CM
+    angle = GREIFER_ZU + GREIFER_WINKEL_SPANNE * ratio
+    angle = max(0, min(180, angle))
+    return int(round(angle)) if snap else angle
+
+
+def finger_angle_to_width(angle_deg):
+    """Gegenrichtung: misst die aktuelle Greifer-Öffnung (cm) bei gegebenem Winkel."""
+    a = float(max(0, min(180, angle_deg)))
+    ratio = (a - GREIFER_ZU) / GREIFER_WINKEL_SPANNE
+    return round(max(0.0, ratio * GRIPPER_MAX_GAP_CM), 2)
 
 # ===========================================================================
 # ⚙️ 2D REICHWEITE-MODELL (LENKEN ÜBER R & Z) — ye-141-8 / v3.5-Ebene
@@ -79,6 +101,7 @@ def load_config():
                      'step_angle': str(STEP_ANGLE)}
     cfg['safety'] = {'safe_home': '90,90,90,90,90,90'}
     cfg['recorder'] = {'speed': '1.00', 'loop': 'false'}
+    cfg['gripper'] = {'max_gap_cm': str(GRIPPER_MAX_GAP_CM), 'close_angle': str(GREIFER_ZU)}
     cfg['window'] = {'geometry': '1400x900'}
     try:
         if os.path.exists(CONFIG_FILE):
@@ -302,6 +325,16 @@ class SciFiRobotGUI(QMainWindow):
 
         self.cfg = load_config()
         self.step_angle = int(self.cfg.get('serial', 'step_angle', fallback=str(STEP_ANGLE)))
+        global GRIPPER_MAX_GAP_CM, GREIFER_ZU
+        try:
+            GRIPPER_MAX_GAP_CM = float(self.cfg.get('gripper', 'max_gap_cm', fallback=str(GRIPPER_MAX_GAP_CM)))
+        except ValueError:
+            pass
+        try:
+            GREIFER_ZU = int(self.cfg.get('gripper', 'close_angle', fallback=str(GREIFER_ZU)))
+        except ValueError:
+            pass
+        GREIFER_WINKEL_SPANNE = GREIFER_OFFEN - GREIFER_ZU
         self.safe_home = {j: 90 for j in JOINT_ORDER}
         self._load_safe_home()
         self._load_presets()
@@ -822,7 +855,7 @@ class SciFiRobotGUI(QMainWindow):
 
     # ----------------------------- Reichweite-R/Z & THROW (ye-141-8) -----------------------------
     def _build_rz_page(self):
-        page, c = self._page_container("REICHWEITE-R/Z & AUTONOM THROW", '#ff6a00')
+        page, c = self._page_container("REICHWEITE-R/Z · OBJEKT-GREIFEN · PICK & DROP", '#ff6a00')
 
         # 1. ECHTZEIT TRACKER (LIVE POS & KOPIEREN)
         tracker_box = QGroupBox("📍 LIVE TRACKER & KOORDINATEN MONITORING")
@@ -841,51 +874,76 @@ class SciFiRobotGUI(QMainWindow):
         tracker_layout.addWidget(b_cd, 2, 1)
         c.addWidget(tracker_box)
 
-        # 2. ENTKOPPELTE ARM- & ENDEFFECTOR-STEUERUNG
-        ctrl_box = QGroupBox("🎯 STEUERUNG (BASIS, REICHWEITE, WRIST & FINGER)")
-        ctrl_layout = QGridLayout(ctrl_box)
-        ctrl_layout.addWidget(QLabel("Basis Grad (0-180°):"), 0, 0)
+        # 2. ENTKOPPELTE POSITIONIERUNG: BASIS / REICHWEITE / HÖHE
+        pos_box = QGroupBox("🎯 POSITION (BASE, REICHWEITE R & HÖHE Z)")
+        pos_layout = QGridLayout(pos_box)
+        pos_layout.addWidget(QLabel("Basis Grad (0-180°):"), 0, 0)
         self.txt_base_angle = QLineEdit("90")
-        ctrl_layout.addWidget(self.txt_base_angle, 0, 1)
-        ctrl_layout.addWidget(QLabel("Reichweite R (cm) & Höhe Z (cm):"), 1, 0)
-        rz_layout = QHBoxLayout()
+        pos_layout.addWidget(self.txt_base_angle, 0, 1)
+        pos_layout.addWidget(QLabel("Reichweite R (cm):"), 1, 0)
         self.txt_reach_r = QLineEdit("25.0")
+        pos_layout.addWidget(self.txt_reach_r, 1, 1)
+        pos_layout.addWidget(QLabel("Höhe Z (cm):"), 2, 0)
         self.txt_height_z = QLineEdit("10.0")
-        rz_layout.addWidget(self.txt_reach_r)
-        rz_layout.addWidget(QLabel("Z:"))
-        rz_layout.addWidget(self.txt_height_z)
-        ctrl_layout.addLayout(rz_layout, 1, 1)
+        pos_layout.addWidget(self.txt_height_z, 2, 1)
+        b_move = QPushButton("▶ POSITION ANFAHREN")
+        b_move.clicked.connect(self.on_move_position_clicked)
+        pos_layout.addWidget(b_move, 3, 0, 1, 2)
+        c.addWidget(pos_box)
 
-        ctrl_layout.addWidget(QLabel("Wrist (Grad 0-180°):"), 2, 0)
+        # 3. ENDEFFECTOR: WRIST & FINGER MIT PRESETS + LIVE-ÖFFNUNG
+        eff_box = QGroupBox("🦾 ENDEFFECTOR — WRIST & FINGER")
+        eff_layout = QGridLayout(eff_box)
+
+        # Wrist
+        eff_layout.addWidget(QLabel("Handgelenk (0-180°):"), 0, 0)
         wrist_v_layout = QVBoxLayout()
         self.txt_wrist_deg = QLineEdit("90")
         wrist_v_layout.addWidget(self.txt_wrist_deg)
         wrist_btn_layout = QHBoxLayout()
-        for lbl, val in [("0° Vert", "0"), ("45° DiagL", "45"), ("90° Horiz", "90"), ("135° DiagR", "135")]:
+        for lbl, val in [("0°", "0"), ("45°", "45"), ("90°", "90"), ("135°", "135")]:
             b = QPushButton(lbl)
-            b.clicked.connect(lambda _, v=val: self.txt_wrist_deg.setText(v))
+            b.clicked.connect(lambda _, v=val: (self.txt_wrist_deg.setText(v), self.log(f"Wrist-Preset: {v}°")))
             wrist_btn_layout.addWidget(b)
         wrist_v_layout.addLayout(wrist_btn_layout)
-        ctrl_layout.addLayout(wrist_v_layout, 2, 1)
+        eff_layout.addLayout(wrist_v_layout, 0, 1)
 
-        ctrl_layout.addWidget(QLabel("Finger / Greifer (Grad 0-180°):"), 3, 0)
-        finger_v_layout = QVBoxLayout()
-        self.txt_finger_deg = QLineEdit("180")
-        finger_v_layout.addWidget(self.txt_finger_deg)
+        # Finger
+        eff_layout.addWidget(QLabel("Finger öffnen (mm/cm):"), 1, 0)
+        finger_width_layout = QHBoxLayout()
+        self.txt_finger_width = QLineEdit(str(round(GRIPPER_MAX_GAP_CM, 1)))
+        finger_width_layout.addWidget(self.txt_finger_width)
+        finger_width_layout.addWidget(QLabel("cm"))
+        eff_layout.addLayout(finger_width_layout, 1, 1)
         finger_btn_layout = QHBoxLayout()
-        for lbl, val in [("✊ Zu (0°)", "0"), ("🤏 Halb (90°)", "90"), ("🖐️ Offen (180°)", "180")]:
+        for lbl, val in [("✊ Schließen", "0"), ("🤏 Halb", str(round(GRIPPER_MAX_GAP_CM / 2, 1))),
+                         ("🖐️ Offen", str(round(GRIPPER_MAX_GAP_CM, 1)))]:
             b = QPushButton(lbl)
-            b.clicked.connect(lambda _, v=val: self.txt_finger_deg.setText(v))
+            b.clicked.connect(lambda _, v=val: self.txt_finger_width.setText(v))
             finger_btn_layout.addWidget(b)
-        finger_v_layout.addLayout(finger_btn_layout)
-        ctrl_layout.addLayout(finger_v_layout, 3, 1)
+        eff_layout.addLayout(finger_btn_layout, 1, 2)
 
-        b_move = QPushButton("▶ PARAMETER ANFAHREN")
-        b_move.clicked.connect(self.on_move_decoupled_clicked)
-        ctrl_layout.addWidget(b_move, 4, 0, 1, 2)
-        c.addWidget(ctrl_box)
+        self.lbl_finger_gauge = QLabel("")
+        self.lbl_finger_gauge.setStyleSheet("color: #e8b84b; font-size: 11px; font-weight: bold;")
+        eff_layout.addWidget(self.lbl_finger_gauge, 2, 1, 1, 2)
 
-        # 3. PICK, ROTATE & DROP / THROW SEQUENZ
+        b_apply_eff = QPushButton("▶ ENDEFFECTOR SETZEN (WRIST + FINGER)")
+        b_apply_eff.clicked.connect(self.on_apply_effector_clicked)
+        eff_layout.addWidget(b_apply_eff, 3, 0, 1, 3)
+        c.addWidget(eff_box)
+
+        # 4. OBJEKT-GREIFEN NACH BREITE
+        grab_box = QGroupBox("📏 OBJEKT GREIFEN NACH BREITE (SENSORFREI)")
+        grab_layout = QGridLayout(grab_box)
+        grab_layout.addWidget(QLabel("Objekt-Breite (cm):"), 0, 0)
+        self.txt_obj_width = QLineEdit("4.0")
+        grab_layout.addWidget(self.txt_obj_width, 0, 1)
+        b_grab = QPushButton("💥 OBJEKT GREIFEN & ABLEGEN (PICK→DROP)")
+        b_grab.clicked.connect(self.execute_width_pick_place)
+        grab_layout.addWidget(b_grab, 1, 0, 1, 2)
+        c.addWidget(grab_box)
+
+        # 5. AUTONOM PICK, ROTATE & DROP / THROW (klassischer Ablauf)
         throw_box = QGroupBox("📦 AUTONOM PICK, ROTATE & ABWERFEN / DROP")
         throw_layout = QGridLayout(throw_box)
         throw_layout.addWidget(QLabel("Pick: Base°, R cm, Z cm, Wrist°:"), 0, 0)
@@ -924,6 +982,11 @@ class SciFiRobotGUI(QMainWindow):
                 f"Winkel: Base: {self.angles['Base']}° | Dual: {self.angles['Dual']}° | "
                 f"Arm: {self.angles['Arm']}° | Elbow: {self.angles['Elbow']}° | "
                 f"Wrist: {self.angles['Wrist']}° | Finger: {self.angles['Finger']}°")
+            if hasattr(self, 'lbl_finger_gauge'):
+                gap = finger_angle_to_width(self.angles['Finger'])
+                self.lbl_finger_gauge.setText(
+                    f"🔧 Greifer-Öffnung: {gap} cm  ·  Finger-Winkel: {self.angles['Finger']}°  ·  "
+                    f"Max: {GRIPPER_MAX_GAP_CM} cm")
 
     def copy_to_pick(self):
         b = self.angles["Base"]
@@ -978,23 +1041,50 @@ class SciFiRobotGUI(QMainWindow):
         p4 = [r_cm * math.cos(rad_b), r_cm * math.sin(rad_b), z_cm]
         return True, target_angles, (p0, p1, p2, p4)
 
-    def on_move_decoupled_clicked(self):
+    def _read_effector(self):
+        """Liest Wrist (Grad) und Finger (als Öffnung in cm) aus den Feldern.
+        Gibt (w_deg, finger_cm, finger_deg) zurück oder None bei ungültiger Eingabe."""
+        try:
+            w_deg = float(self.txt_wrist_deg.text().strip())
+            cm_val = float(self.txt_finger_width.text().strip())
+        except ValueError:
+            QMessageBox.warning(self, "Fehler", "Ungültige Zahlen im Wrist/Finger-Feld!")
+            return None
+        finger_deg = width_to_finger_angle(cm_val)
+        return max(0, min(180, w_deg)), max(0.0, cm_val), finger_deg
+
+    def on_move_position_clicked(self):
         try:
             b_deg = float(self.txt_base_angle.text().strip())
             r_cm = float(self.txt_reach_r.text().strip())
             z_cm = float(self.txt_height_z.text().strip())
-            w_deg = float(self.txt_wrist_deg.text().strip())
-            f_deg = float(self.txt_finger_deg.text().strip())
         except ValueError:
-            QMessageBox.warning(self, "Fehler", "Ungültige Zahlen im Eingabefeld!")
+            QMessageBox.warning(self, "Fehler", "Ungültige Zahlen im Positionsfeld!")
             return
+        eff = self._read_effector()
+        if eff is None:
+            return
+        w_deg, cm_val, f_deg = eff
         ok, target, pts = self.calculate_2d_ik(b_deg, r_cm, z_cm, w_deg, f_deg)
         if ok:
-            self.log(f"Fahre zu: Base={b_deg}°, R={r_cm}cm, Z={z_cm}cm, Wrist={w_deg}°, Finger={f_deg}°")
+            self.log(f"Fahre zu: Base={b_deg}°, R={r_cm}cm, Z={z_cm}cm, Wrist={w_deg}°, Finger={f_deg}° ({cm_val} cm)")
             threading.Thread(target=self.move_smoothly, args=(target, pts), daemon=True).start()
         else:
             self.log(f"❌ {target}")
             QMessageBox.critical(self, "IK Fehler", target)
+
+    def on_apply_effector_clicked(self):
+        """Setzt nur Wrist + Finger (Öffnung in cm) ohne die Position zu bewegen."""
+        eff = self._read_effector()
+        if eff is None:
+            return
+        w_deg, cm_val, f_deg = eff
+        pos = dict(self.angles)
+        pos["Wrist"] = int(round(w_deg))
+        pos["Finger"] = f_deg
+        self.send_angles(pos)
+        self.log(f"Endeffector gesetzt: Wrist={w_deg}° · Finger={f_deg}° ({cm_val} cm Öffnung)")
+        self._refresh_rz_tracker()
 
     def execute_pick_and_throw(self):
         try:
@@ -1032,6 +1122,65 @@ class SciFiRobotGUI(QMainWindow):
             self._send_angles(ik_drop)
             self.sig_pose.emit(dict(ik_drop), None)
             self.log("💥 OBJEKT ABGEWORFEN / FALLENGELASSEN!")
+            time.sleep(0.5)
+            self.reset_all_servos()
+            self._refresh_rz_tracker()
+
+        threading.Thread(target=sequence, daemon=True).start()
+
+    def execute_width_pick_place(self):
+        """Greift ein Objekt anhand seiner Breite (cm, sensorfrei) und legt es bei Drop ab."""
+        eff = self._read_effector()
+        if eff is None:
+            return
+        w_deg, cm_val, f_grip_deg = eff
+        try:
+            obj_w = float(self.txt_obj_width.text().strip())
+        except ValueError:
+            QMessageBox.warning(self, "Fehler", "Ungültige Objekt-Breite!")
+            return
+        obj_w = max(0.0, min(GRIPPER_MAX_GAP_CM, obj_w))
+        grab_deg = width_to_finger_angle(obj_w)
+        if grab_deg >= f_grip_deg:
+            QMessageBox.warning(
+                self, "Objekt-Hinweis",
+                f"Objekt ({obj_w} cm) passt nicht in die voreingestellte Öffnung "
+                f"({cm_val} cm). Öffne den Finger weiter zuerst.")
+            return
+        try:
+            p_parts = [float(i) for i in self.txt_pick_params.text().split(",")]
+            d_parts = [float(i) for i in self.txt_drop_params.text().split(",")]
+        except Exception:
+            QMessageBox.warning(self, "Fehler", "Format: 'Base, R, Z, Wrist' z.B.: '45, 25.0, 5.0, 90'")
+            return
+        p_base, p_r, p_z, p_w = p_parts
+        d_base, d_r, d_z, d_w = d_parts
+        ok1, ik_pick, pts_p = self.calculate_2d_ik(p_base, p_r, p_z, p_w, 180)
+        ok2, ik_drop, pts_d = self.calculate_2d_ik(d_base, d_r, d_z, d_w, grab_deg)
+        if not ok1 or not ok2:
+            QMessageBox.critical(self, "IK Fehler", "Eine Position liegt außerhalb der Reichweite!")
+            return
+
+        def sequence():
+            self.log(f"🚀 STARTE OBJEKT GREIFEN (Breite {obj_w} cm → Finger {grab_deg}°)...")
+            ik_pick["Finger"] = 180
+            self.move_smoothly(ik_pick, pts_p)
+            time.sleep(0.4)
+            ik_pick["Finger"] = grab_deg
+            self._send_angles(ik_pick)
+            self.sig_pose.emit(dict(ik_pick), None)
+            self.log(f"Greife Objekt mit Breite {obj_w} cm (Finger={grab_deg}°)....")
+            time.sleep(0.5)
+            _, ik_lift, pts_l = self.calculate_2d_ik(p_base, p_r, p_z + 10.0, p_w, grab_deg)
+            self.move_smoothly(ik_lift, pts_l)
+            ik_drop["Finger"] = grab_deg
+            self.move_smoothly(ik_drop, pts_d)
+            self.log(f"Positioniert über Abwurf (Base={d_base}°, Z={d_z}cm).")
+            time.sleep(0.4)
+            ik_drop["Finger"] = 180
+            self._send_angles(ik_drop)
+            self.sig_pose.emit(dict(ik_drop), None)
+            self.log("💥 OBJEKT ABGELEGT!")
             time.sleep(0.5)
             self.reset_all_servos()
             self._refresh_rz_tracker()

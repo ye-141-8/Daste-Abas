@@ -22,6 +22,10 @@
 #define PIN_DUAL_LEFT  10
 #define PIN_DUAL_RIGHT 11
 
+// Greifer-Kalibrierung (sensorfrei, Breite in cm -> Fingerwinkel)
+#define GRIPPER_CLOSE_ANGLE 30      // Winkel bei geschlossenem Greifer (0 cm)
+#define GRIPPER_MAX_GAP_CM  6.0f    // Öffnung (cm) bei 180°
+
 // Funduino Shield Pins
 #define JOY_X   A0
 #define JOY_Y   A1
@@ -78,6 +82,23 @@ void setDualOpposingServos(int leftAngle) {
   int rightAngle = 180 - leftAngle;
   setServoAngle(PIN_DUAL_LEFT, leftAngle);
   setServoAngle(PIN_DUAL_RIGHT, rightAngle);
+}
+
+// Breite (cm) -> Fingerwinkel (0-180), lineares Modell
+int widthToFingerAngle(float widthCm) {
+  if (widthCm < 0) widthCm = 0;
+  if (widthCm > GRIPPER_MAX_GAP_CM) widthCm = GRIPPER_MAX_GAP_CM;
+  float ratio = widthCm / GRIPPER_MAX_GAP_CM;
+  int angle = (int)(GRIPPER_CLOSE_ANGLE + (180 - GRIPPER_CLOSE_ANGLE) * ratio + 0.5f);
+  return constrain(angle, 0, 180);
+}
+
+float fingerAngleToWidth(int angleDeg) {
+  angleDeg = constrain(angleDeg, 0, 180);
+  float ratio = (float)(angleDeg - GRIPPER_CLOSE_ANGLE) / (180 - GRIPPER_CLOSE_ANGLE);
+  if (ratio < 0) ratio = 0;
+  if (ratio > 1) ratio = 1;
+  return ratio * GRIPPER_MAX_GAP_CM;
 }
 
 void updateServos() {
@@ -191,6 +212,15 @@ void parseDirectPosition(String data) {
   }
 }
 
+void parseGrabWidth(String data) {
+  // Format: "G:width,maxgap"  -> setzt angleFinger auf die passende Öffnung (cm)
+  int first = data.indexOf(':');
+  if (first == -1) return;
+  String payload = data.substring(first + 1);
+  float widthCm = payload.toFloat();
+  angleFinger = widthToFingerAngle(widthCm);
+}
+
 void loop() {
   bool moved = false;
 
@@ -200,6 +230,9 @@ void loop() {
     input.trim();
     if (input.startsWith("P:")) {
       parseDirectPosition(input);
+      moved = true;
+    } else if (input.startsWith("G:")) {
+      parseGrabWidth(input);
       moved = true;
     } else if (input.length() == 1) {
       processSerialKey(input.charAt(0));

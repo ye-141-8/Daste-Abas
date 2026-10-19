@@ -16,12 +16,15 @@ from PySide6.QtWidgets import (
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
     QSlider, QTextEdit, QMessageBox, QComboBox, QStackedWidget,
     QListWidget, QListWidgetItem, QProgressBar, QCheckBox, QSpinBox,
-    QFrame, QScrollArea, QSizePolicy
+    QDoubleSpinBox, QFrame, QScrollArea, QSizePolicy
 )
 
 # Matplotlib für die 3D Sci-Fi Visualisierung
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+from mpl_toolkits.mplot3d import proj3d
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Line3DCollection
 
 # ===========================================================================
 # ⚙️ HIER BEARBEITEST DU DIE ABSTÄNDE UND MOTOR-LÄNGEN IM CODE (in cm)
@@ -30,12 +33,24 @@ L1_CM = 6.00   # Abstand Motor 1 (Basis) bis Motor 2/6 (Schulter)
 L2_CM = 12.00  # Oberarm: Abstand Schulter-Motor bis Ellbogen-Motor
 L3_CM = 10.00  # Unterarm: Abstand Ellbogen-Motor bis Handgelenk-Motor
 L4_CM = 6.00   # Greifer: Abstand Handgelenk-Motor bis Greiferspitze
+L_ARM_CM = 6.00  # Mittel-Segment: Abstand Schulter-Joint (Arm) bis Ellbogen
 
 GREIFER_OFFEN = 180
 GREIFER_ZU = 30                      # Finger-Winkel bei geschlossenem Greifer (0 cm Öffnung)
 GRIPPER_MAX_GAP_CM = 6.0             # Öffnung (cm) bei vollständig geöffnetem Greifer (180°)
 GREIFER_WINKEL_SPANNE = (GREIFER_OFFEN - GREIFER_ZU)   # nutzbarer Winkelbereich
 DEFAULT_BAUD = 9600
+
+# Basis-Höhe über dem Boden (cm) und Motor-Farben für Label + Arm-Teile
+BASE_HEIGHT_CM = 10.0
+MOTOR_COLORS = {
+    'Base':   '#5cc8ff',
+    'Dual':   '#ff8a3d',
+    'Arm':    '#00ff88',
+    'Elbow':  '#ff5c8a',
+    'Wrist':  '#ffe066',
+    'Finger': '#b14aff',
+}
 
 
 def width_to_finger_angle(width_cm, snap=True):
@@ -90,6 +105,77 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, 'config.ini')
 PRESET_FILE = os.path.join(BASE_DIR, 'presets.json')
 SEQUENCE_DIR = os.path.join(BASE_DIR, 'sequences')
+AUTOMATION_DIR = os.path.join(BASE_DIR, 'automation')
+SCENE_FILE = os.path.join(AUTOMATION_DIR, 'scene.json')
+
+SHAPE_TYPES = ['Würfel', 'Quader', 'Kugel', 'Pyramide', 'Zylinder']
+
+
+def _v(x, y, z):
+    return [x, y, z]
+
+
+def shape_polygons(kind, size, pos):
+    """Erzeugt (verts, faces) für einen Körper an Position `pos` mit Größe `size`."""
+    x, y, z = pos[0], pos[1], pos[2]
+    s = float(size)
+    if kind == 'Würfel':
+        h = s / 2.0
+        verts = [_v(x + a * h, y + b * h, z + c * h)
+                 for a in (1, -1) for b in (1, -1) for c in (1, -1)]
+        faces = [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4],
+                 [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]]
+        return verts, faces
+    if kind == 'Quader':
+        hx, hy, hz = s, s * 0.6, s * 0.5
+        verts = [_v(x + a * hx, y + b * hy, z + c * hz)
+                 for a in (1, -1) for b in (1, -1) for c in (1, -1)]
+        faces = [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4],
+                 [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]]
+        return verts, faces
+    if kind == 'Zylinder':
+        n = 24
+        top, bottom = [], []
+        for i in range(n):
+            a = 2 * math.pi * i / n
+            top.append(_v(x + s * math.cos(a), y + s * math.sin(a), z + s))
+            bottom.append(_v(x + s * math.cos(a), y + s * math.sin(a), z - s))
+        verts = top + bottom
+        faces = [[i, (i + 1) % n, n + (i + 1) % n, n + i] for i in range(n)]
+        faces += [[i for i in range(n)]]          # Deckel
+        faces += [[n + i for i in range(n)]]      # Boden
+        return verts, faces
+    if kind == 'Pyramide':
+        s2 = s / 2.0
+        apex = _v(x, y, z + s)
+        base = [_v(x + a * s2, y + b * s2, z - s2) for a, b in ((1, 1), (-1, 1), (-1, -1), (1, -1))]
+        verts = base + [apex]
+        faces = [[0, 1, 2, 3], [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]]
+        return verts, faces
+    # default: Kugel (Quader-Näherung mit mehr Flächen zu komplex)
+    k = 8
+    verts = []
+    for i in range(k + 1):
+        phi = math.pi * i / k
+        for j in range(2 * k):
+            th = 2 * math.pi * j / (2 * k)
+            verts.append(_v(x + s * math.sin(phi) * math.cos(th),
+                            y + s * math.sin(phi) * math.sin(th),
+                            z + s * math.cos(phi)))
+    faces = []
+    for i in range(k):
+        for j in range(2 * k):
+            a = i * 2 * k + j
+            b = a + 1 if (j + 1) % (2 * k) else a - 2 * k + 1
+            c = (i + 1) * 2 * k + j
+            d = (i + 1) * 2 * k + (j + 1) if (j + 1) % (2 * k) else c - 2 * k + 1
+            faces.append([a, b, d, c])
+    return verts, faces
+
+
+def _norm(v):
+    l = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+    return [0.0, 0.0, 0.0] if l == 0 else [v[0] / l, v[1] / l, v[2] / l]
 
 
 # ===========================================================================
@@ -318,6 +404,8 @@ class SciFiRobotGUI(QMainWindow):
     sig_loop_tick = Signal(int)
     sig_recorder_status = Signal()
     sig_conn_state = Signal()
+    sig_auto_status = Signal(str)
+    sig_auto_done = Signal()
 
     def __init__(self):
         super().__init__()
@@ -371,6 +459,20 @@ class SciFiRobotGUI(QMainWindow):
         self._pending_pts = None
         self._plot_timer_active = False
 
+        # ---- Automation / Scene / Shapes ----
+        self.scene_shapes = []          # [{id,name,type,size,pos,color}]
+        self.seq_actions = []           # [{type, ...}]
+        self.auto_running = False
+        self.auto_abort = threading.Event()
+        self.target_xyz = None          # vom Klick gesetztes Ziel
+        self.target_pick_mode = False
+        self.selected_shape = None
+        self.auto_repeat = 1
+        self.obj_counter = 0
+        self.cam_lock = False
+        self.movement_log = None
+        self._load_scene()
+
         self.init_ui()
         self.apply_scifi_stylesheet()
 
@@ -386,6 +488,8 @@ class SciFiRobotGUI(QMainWindow):
         self.sig_loop_tick.connect(self._on_loop_tick)
         self.sig_recorder_status.connect(self._render_recorder)
         self.sig_conn_state.connect(self._update_conn_label)
+        self.sig_auto_status.connect(self._on_auto_status)
+        self.sig_auto_done.connect(self._on_auto_done)
 
         # Status-Polling
         self._poll_timer = QTimer(self)
@@ -421,7 +525,8 @@ class SciFiRobotGUI(QMainWindow):
         self.sidebar.setFixedWidth(170)
         for text in ["🕹  Manuell", "🎯  Koordinaten", "🔄  Pick & Drop",
                      "🔧  Motor-Test", "🎬  Recorder", "🗒  Sequencer",
-                     "💾  Presets", "🎛  Reichweite-R/Z & THROW", "🖥  Konsole & Einstellungen"]:
+                     "💾  Presets", "🎛  Reichweite-R/Z & THROW", "🖥  Konsole & Einstellungen",
+                     "🤖  Automation Studio"]:
             item = QListWidgetItem(text)
             self.sidebar.addItem(item)
         self.sidebar.currentRowChanged.connect(self._on_sidebar_changed)
@@ -438,9 +543,11 @@ class SciFiRobotGUI(QMainWindow):
         self._page_presets = self._build_presets_page()
         self._page_rz = self._build_rz_page()
         self._page_settings = self._build_settings_page()
+        self._page_automation = self._build_automation_page()
         for p in (self._page_manuell, self._page_koordinaten, self._page_pickdrop,
                   self._page_test, self._page_recorder, self._page_sequencer,
-                  self._page_presets, self._page_rz, self._page_settings):
+                  self._page_presets, self._page_rz, self._page_settings,
+                  self._page_automation):
             self.stack.addWidget(p)
         self.sidebar.setCurrentRow(0)
         body.addWidget(self.stack, 3)
@@ -509,19 +616,85 @@ class SciFiRobotGUI(QMainWindow):
         self.canvas = FigureCanvas(self.fig)
         self.ax = self.fig.add_subplot(111, projection='3d')
         v.addWidget(self.canvas)
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar.setStyleSheet("background-color:#0a0d18; color:#00ffcc;")
+        v.addWidget(self.toolbar)
+        self.canvas.mpl_connect('button_press_event', self._on_canvas_click)
+        self.canvas.mpl_connect('motion_notify_event', self._on_canvas_motion)
 
         self.lbl_curr_pos = QLabel("X: 0.00 cm | Y: 0.00 cm | Z: 0.00 cm")
         self.lbl_curr_pos.setStyleSheet("color: #00ffcc; font-size: 13px; font-weight: bold;")
         v.addWidget(self.lbl_curr_pos)
 
-        cam = QHBoxLayout()
-        b_reset = QPushButton("📷 Ansicht Reset")
+        # Gruppe 1: Kamera
+        cmg = QGroupBox("Kamera")
+        cam = QHBoxLayout(cmg)
+        b_free = QPushButton("Frei")
+        b_free.clicked.connect(self.unlock_camera)
+        b_lock = QPushButton("Lock")
+        b_lock.clicked.connect(self.lock_camera)
+        b_reset = QPushButton("Reset")
         b_reset.clicked.connect(self.reset_camera)
-        b_top = QPushButton("📐 Draufsicht")
+        b_top = QPushButton("Top")
         b_top.clicked.connect(self.top_camera)
-        cam.addWidget(b_reset)
-        cam.addWidget(b_top)
-        v.addLayout(cam)
+        b_side = QPushButton("Seite")
+        b_side.clicked.connect(self.side_camera)
+        b_front = QPushButton("Front")
+        b_front.clicked.connect(self.front_camera)
+        for b in (b_free, b_lock, b_reset, b_top, b_side, b_front):
+            cam.addWidget(b)
+        self.lbl_cam_lock = QLabel("frei")
+        self.lbl_cam_lock.setStyleSheet("color:#5cc8ff; font-size:9px;")
+        cam.addWidget(self.lbl_cam_lock)
+        v.addWidget(cmg)
+
+        # Gruppe 2: Objekt (o1, o2, ...)
+        obg = QGroupBox("Objekt")
+        obr = QHBoxLayout(obg)
+        b_add = QPushButton("+ Neu")
+        b_add.clicked.connect(self.quick_add_shape)
+        b_del = QPushButton("- Entf")
+        b_del.clicked.connect(self.del_shape)
+        b_move = QPushButton("Bewegen")
+        b_move.clicked.connect(self.move_shape_to_target)
+        b_edit = QPushButton("Bearbeiten")
+        b_edit.clicked.connect(self.edit_selected_shape)
+        for b in (b_add, b_del, b_move, b_edit):
+            obr.addWidget(b)
+        self.lbl_3d_sel = QLabel("—")
+        self.lbl_3d_sel.setStyleSheet("color:#b14aff; font-size:9px;")
+        obr.addWidget(self.lbl_3d_sel)
+        v.addWidget(obg)
+
+        # Gruppe 3: Ziel
+        zgg = QGroupBox("Ziel")
+        zgr = QHBoxLayout(zgg)
+        zgr.addWidget(QLabel("Z:"))
+        self.spin_target_z = QSpinBox()
+        self.spin_target_z.setRange(0, 30)
+        self.spin_target_z.setValue(0)
+        zgr.addWidget(self.spin_target_z)
+        self.btn_target_pick = QPushButton("Klick-Ziel")
+        self.btn_target_pick.setCheckable(True)
+        self.btn_target_pick.clicked.connect(self.toggle_target_pick_mode)
+        zgr.addWidget(self.btn_target_pick)
+        b_goto = QPushButton("Zum Ziel")
+        b_goto.clicked.connect(self.goto_target)
+        zgr.addWidget(b_goto)
+        b_clear = QPushButton("Los")
+        b_clear.clicked.connect(self.clear_target)
+        zgr.addWidget(b_clear)
+        v.addWidget(zgg)
+
+        # Log-Fenster für Bewegungen
+        logg = QGroupBox("Bewegungs-Log")
+        lg = QVBoxLayout(logg)
+        self.movement_log = QTextEdit()
+        self.movement_log.setReadOnly(True)
+        self.movement_log.setMaximumHeight(110)
+        lg.addWidget(self.movement_log)
+        v.addWidget(logg)
+
         layout.addWidget(vis_box)
 
         return layout
@@ -535,8 +708,13 @@ class SciFiRobotGUI(QMainWindow):
         gl = QGridLayout(g)
         self.sliders = {}
         self.spins = {}
+        self.motor_labels = {}
         for idx, joint in enumerate(JOINT_ORDER):
-            gl.addWidget(QLabel(f"{joint}:"), idx, 0)
+            mcol = MOTOR_COLORS.get(joint, '#00ffcc')
+            jl = QLabel(f"● {joint}:")
+            jl.setStyleSheet(f"color: {mcol}; font-weight: bold; font-size: 11px;")
+            self.motor_labels[joint] = jl
+            gl.addWidget(jl, idx, 0)
             slider = QSlider(Qt.Horizontal)
             slider.setRange(0, 180)
             slider.setValue(self.angles[joint])
@@ -967,14 +1145,11 @@ class SciFiRobotGUI(QMainWindow):
     # REICHWEITE-R/Z & THROW HANDLER (ye-141-8 / v3.5-Ebene)
     # ==================================================================
     def _refresh_rz_tracker(self):
-        b_rad = math.radians(self.angles["Base"] - 90.0)
-        s_rad = math.radians(self.angles["Arm"])
-        e_rad = math.radians(180.0 - self.angles["Elbow"])
-        r_arm = L1_DUAL * math.cos(s_rad) + L_EFF * math.cos(s_rad - e_rad)
-        x = round(r_arm * math.cos(b_rad), 2)
-        y = round(r_arm * math.sin(b_rad), 2)
-        z = round(max(0.0, L_BASE + L1_DUAL * math.sin(s_rad) + L_EFF * math.sin(s_rad - e_rad)), 2)
-        self.current_r = round(r_arm, 2)
+        tip = self._chain_points()[5]
+        x = round(tip[0], 2)
+        y = round(tip[1], 2)
+        z = round(tip[2], 2)
+        self.current_r = round(math.hypot(x, y), 2)
         self.current_xyz = (x, y, z)
         if self.lbl_curr_xyz is not None:
             self.lbl_curr_xyz.setText(f"X: {x} cm | Y: {y} cm | Z: {z} cm | R: {self.current_r} cm")
@@ -1024,8 +1199,8 @@ class SciFiRobotGUI(QMainWindow):
         finger_deg = max(0, min(180, int(round(finger_deg))))
         target_angles = {
             "Base": base_deg,
-            "Dual": int(round(max(0, min(180, 180.0 - angle_shoulder)))),
-            "Arm": int(round(max(0, min(180, angle_shoulder)))),
+            "Dual": int(round(max(0, min(180, angle_shoulder)))),
+            "Arm": int(round(self.angles['Arm'])),
             "Elbow": int(round(max(0, min(180, 180.0 - angle_elbow)))),
             "Wrist": wrist_deg,
             "Finger": finger_deg,
@@ -1200,6 +1375,30 @@ class SciFiRobotGUI(QMainWindow):
     def log(self, text):
         self.sig_log.emit(text)
 
+    def _movement_log(self, text):
+        if self.movement_log is not None:
+            self.movement_log.append(text)
+            while self.movement_log.document().blockCount() > 400:
+                cur = self.movement_log.textCursor()
+                cur.movePosition(cur.Start)
+                cur.movePosition(cur.EndOfLine, cur.KeepAnchor)
+                cur.removeSelectedText()
+                self.movement_log.textCursor().deletePreviousChar()
+
+    def _log_movement(self, joint, prev, target):
+        if joint not in self.angles:
+            return
+        d = int(round(target - prev))
+        if d == 0:
+            return
+        direction = "(" + ("+" if d > 0 else "") + f"{d}°)"
+        speed = self.get_step_delay()
+        ms = int(speed * 1000)
+        self._movement_log(
+            f"[{time.strftime('%H:%M:%S')}] {joint}: {int(prev)}° -> {int(target)}° "
+            f"{direction}  @ {ms} ms/Schritt")
+        self.log(f"{joint} {int(prev)}° -> {int(target)}° {direction} @ {ms} ms")
+
     def _on_log(self, text):
         stamps = time.strftime('%H:%M:%S')
         if self.log_text is None:
@@ -1250,8 +1449,33 @@ class SciFiRobotGUI(QMainWindow):
     # VIDEOKAMERA & GESCHWINDIGKEIT
     # ==================================================================
     def reset_camera(self):
+        self.cam_lock = False
+        try:
+            self.lbl_cam_lock.setText("frei")
+        except Exception:
+            pass
         self.ax.view_init(elev=25, azim=-60)
         self.canvas.draw()
+
+    def lock_camera(self):
+        self.cam_lock = True
+        self._locked_view = (self.ax.elev, self.ax.azim)
+        try:
+            self.lbl_cam_lock.setText("locked")
+        except Exception:
+            pass
+
+    def unlock_camera(self):
+        self.cam_lock = False
+        try:
+            self.lbl_cam_lock.setText("frei")
+        except Exception:
+            pass
+
+    def _on_canvas_motion(self, event):
+        if self.cam_lock and event.inaxes is self.ax:
+            self.ax.view_init(elev=self._locked_view[0], azim=self._locked_view[1])
+            self.canvas.draw_idle()
 
     def top_camera(self):
         self.ax.view_init(elev=90, azim=-90)
@@ -1275,35 +1499,38 @@ class SciFiRobotGUI(QMainWindow):
     # ==================================================================
     # 3D RENDERER & VORWÄRTSKINEMATIK (FK)
     # ==================================================================
+    def _chain_points(self):
+        """Berechnet die Gelenk-Kette (Boden, Schulter, Mitte, Ellbogen, Handgelenk, Spitze)."""
+        b = math.radians(self.angles['Base'] - 90.0)
+        cb, sb = math.cos(b), math.sin(b)
+        th1 = math.radians(self.angles['Dual'])                # Schulter (Dual)
+        a = math.radians(self.angles['Arm'] - 90.0)            # Mittel-Joint (Arm)
+        e = math.radians(self.angles['Elbow'] - 90.0)          # Ellbogen (Elbow)
+        th2 = th1 + a
+        th3 = th2 + e
+
+        def pt(elev, length, x0, y0, z0):
+            c = math.cos(elev)
+            return [x0 + length * c * cb, y0 + length * c * sb, z0 + length * math.sin(elev)]
+
+        shoulder = [0, 0, BASE_HEIGHT_CM]
+        mid = pt(th1, L2_CM, 0, 0, BASE_HEIGHT_CM)
+        elbow = pt(th2, L_ARM_CM, *mid)
+        wrist = pt(th3, L3_CM, *elbow)
+        tip = pt(th3, L4_CM, *wrist)
+        return [[0, 0, 0], shoulder, mid, elbow, wrist, tip]
+
     def recalculate_fk_and_update(self):
-        b_rad = math.radians(self.angles["Base"] - 90.0)
-        s_rad = math.radians(self.angles["Arm"])
-        e_rad = math.radians(180.0 - self.angles["Elbow"])
-
-        p0 = [0, 0, 0]
-        p1 = [0, 0, L1_CM]
-
-        r_arm = L2_CM * math.cos(s_rad) + L3_CM * math.cos(s_rad - e_rad) + L4_CM
-        z_arm = L1_CM + L2_CM * math.sin(s_rad) + L3_CM * math.sin(s_rad - e_rad)
-
-        x = r_arm * math.cos(b_rad)
-        y = r_arm * math.sin(b_rad)
-        z = max(0.0, z_arm)
-
-        self.current_xyz = (round(x, 2), round(y, 2), round(z, 2))
+        pts = self._chain_points()
+        tip = pts[5]
+        self.current_xyz = (round(tip[0], 2), round(tip[1], 2), round(tip[2], 2))
         self.lbl_curr_pos.setText(
             f"X: {self.current_xyz[0]} cm | Y: {self.current_xyz[1]} cm | Z: {self.current_xyz[2]} cm")
+        self.update_3d_plot()
+        self._refresh_rz_tracker()
 
-        p2 = [
-            p1[0] + L2_CM * math.cos(s_rad) * math.cos(b_rad),
-            p1[1] + L2_CM * math.cos(s_rad) * math.sin(b_rad),
-            p1[2] + L2_CM * math.sin(s_rad)
-        ]
-        p3 = [x, y, z]
-        self.update_3d_plot(p0, p1, p2, p3)
-
-    def update_3d_plot(self, p0, p1, p2, p3):
-        self.ax.clear()
+    # ================= 3D-SZENE: ROBOTER + OBJEKTE + ZIEL =================
+    def _style_ax(self):
         self.ax.set_facecolor('#06060c')
         try:
             self.ax.xaxis.pane.set_edgecolor('#00ffcc')
@@ -1311,15 +1538,6 @@ class SciFiRobotGUI(QMainWindow):
         except Exception:
             pass
         self.ax.tick_params(colors='#00ffcc', labelsize=8)
-
-        xs = [p0[0], p1[0], p2[0], p3[0]]
-        ys = [p0[1], p1[1], p2[1], p3[1]]
-        zs = [p0[2], p1[2], p2[2], p3[2]]
-
-        self.ax.plot(xs, ys, zs, '-o', color='#00ffcc', linewidth=4,
-                     markersize=8, markerfacecolor='#ff0055')
-        self.ax.scatter([p3[0]], [p3[1]], [p3[2]], color='#ff0055', s=90, label='Greifer')
-
         self.ax.set_xlim([-25, 25])
         self.ax.set_ylim([-25, 25])
         self.ax.set_zlim([0, 30])
@@ -1327,6 +1545,159 @@ class SciFiRobotGUI(QMainWindow):
         self.ax.set_ylabel('Y (cm)', color='#00ffcc')
         self.ax.set_zlabel('Z (cm)', color='#00ffcc')
 
+    def _draw_floor_grid(self):
+        for l in range(-20, 21, 5):
+            self.ax.plot([l, l], [-20, 20], [0, 0], color='#12304a', linewidth=1, alpha=0.7)
+            self.ax.plot([-20, 20], [l, l], [0, 0], color='#12304a', linewidth=1, alpha=0.7)
+        self.ax.plot([-20, 20], [0, 0], [0, 0], color='#00ffcc', linewidth=1.4, alpha=0.5)
+        self.ax.plot([0, 0], [-20, 20], [0, 0], color='#00ffcc', linewidth=1.4, alpha=0.5)
+
+    def _draw_reach(self):
+        rr = []
+        for i in range(61):
+            a = 2 * math.pi * i / 60
+            rr.append([R_MAX * math.cos(a), R_MAX * math.sin(a), 0])
+        xs = [p[0] for p in rr] + [rr[0][0]]
+        ys = [p[1] for p in rr] + [rr[0][1]]
+        zs = [p[2] for p in rr] + [rr[0][2]]
+        self.ax.plot(xs, ys, zs, color='#00ffcc', linewidth=1, alpha=0.35, linestyle='--')
+
+    def _draw_scene(self):
+        for o in self.scene_shapes:
+            try:
+                verts, faces = shape_polygons(o['type'], o['size'], o['pos'])
+                col = o.get('color', '#ffa800')
+                pc = Poly3DCollection([verts[i] for i in faces], alpha=0.70,
+                                      facecolor=col, edgecolor='#ffffff', linewidth=0.6)
+                self.ax.add_collection3d(pc)
+                self.ax.scatter([o['pos'][0]], [o['pos'][1]], [o['pos'][2]],
+                                color=col, s=24)
+            except Exception:
+                pass
+
+    def _draw_target(self):
+        if self.target_xyz is None:
+            return
+        tx, ty, tz = self.target_xyz
+        self.ax.scatter([tx], [ty], [tz], color='#ffd166', s=160, marker='^', label='Ziel')
+        self.ax.plot([tx, tx], [ty, ty], [0, tz], color='#ffd166', linewidth=1, alpha=0.6, linestyle='--')
+
+    def _draw_link(self, p, q, color, width=6, glow=True):
+        xs = [p[0], q[0]]; ys = [p[1], q[1]]; zs = [p[2], q[2]]
+        self.ax.plot(xs, ys, zs, color=color, linewidth=width, solid_capstyle='round')
+        if glow:
+            self.ax.plot(xs, ys, zs, color=color, linewidth=width + 3, alpha=0.15,
+                         solid_capstyle='round')
+
+    def _draw_joint(self, pt, color, s=60):
+        self.ax.scatter([pt[0]], [pt[1]], [pt[2]], color=color, s=s,
+                        marker='o', edgecolor='#ffffff', alpha=0.95, zorder=5)
+        self.ax.scatter([pt[0]], [pt[1]], [pt[2]], color=color, s=s * 2.4, alpha=0.18, zorder=4)
+
+    def update_3d_plot(self):
+        pts = self._chain_points()
+        floor, shoulder, mid, elbow, wrist, tip = pts
+        self.ax.clear()
+        self._style_ax()
+        self._draw_floor_grid()
+        self._draw_reach()
+
+        # Basis / Sockel über dem Boden (Base-Farbe)
+        self._draw_link(floor, [0, 0, 0.5], MOTOR_COLORS['Base'], width=4)
+        self._draw_link([0, 0, 0.5], shoulder, MOTOR_COLORS['Base'], width=14)
+        self._draw_joint(shoulder, MOTOR_COLORS['Dual'], 80)
+
+        # Arm-Kette farbcodiert
+        for a, b, m in [(shoulder, mid, 'Dual'), (mid, elbow, 'Arm'),
+                        (elbow, wrist, 'Elbow'), (wrist, tip, 'Wrist')]:
+            self._draw_link(a, b, MOTOR_COLORS[m])
+            self._draw_joint(a, MOTOR_COLORS[m], 46)
+        self._draw_joint(tip, MOTOR_COLORS['Wrist'], 60)
+
+        # Greifer-Kiefer (Finger-Farbe), Wrist-Roll rotiert die Öffnung
+        u = _norm([tip[0] - wrist[0], tip[1] - wrist[1], tip[2] - wrist[2]])
+        perp = _norm([u[1], -u[0], 0]) if (u[0] or u[1]) else [1, 0, 0]
+        roll = math.radians(self.angles['Wrist'] - 90.0)
+        cr, sr = math.cos(roll), math.sin(roll)
+        perp = _norm([perp[0] * cr - perp[1] * sr, perp[0] * sr + perp[1] * cr, 0])
+        gap = finger_angle_to_width(self.angles['Finger'])
+        half = max(0.3, gap / 2.0)
+        jb = [tip[i] - u[i] * 1.1 for i in range(3)]
+        j1 = [jb[0] + perp[0] * half, jb[1] + perp[1] * half, jb[2]]
+        j2 = [jb[0] - perp[0] * half, jb[1] - perp[1] * half, jb[2]]
+        fcol = MOTOR_COLORS['Finger']
+        self._draw_link(jb, j1, fcol, width=4)
+        self._draw_link(jb, j2, fcol, width=4)
+        midj = [(j1[i] + j2[i]) / 2.0 for i in range(3)]
+        self._draw_link(tip, midj, fcol, width=2)
+
+        self._draw_scene()
+        self._draw_target()
+        self.ax.text(0, 0, 1, f"Finger {self.angles['Finger']}°  Offen {round(gap, 1)} cm",
+                     color=fcol, fontsize=8)
+        self.canvas.draw()
+
+    @staticmethod
+    def _pick_plane(M, px, py, z):
+        """Invertiert die 3D-Projektion: liefert (x, y) auf der Ebene z."""
+        kw = z * M[3, 2] + M[3, 3]
+        kpx = z * M[0, 2] + M[0, 3]
+        kpy = z * M[1, 2] + M[1, 3]
+        A = np.array([[M[0, 0] - px * M[3, 0], M[0, 1] - px * M[3, 1]],
+                      [M[1, 0] - py * M[3, 0], M[1, 1] - py * M[3, 1]]])
+        b = np.array([px * kw - kpx, py * kw - kpy])
+        try:
+            return np.linalg.solve(A, b)
+        except np.linalg.LinAlgError:
+            return (0.0, 0.0)
+
+    def _on_canvas_click(self, event):
+        if event.inaxes != self.ax or event.button != 1:
+            return
+        self.canvas.setFocus()
+        if not self.target_pick_mode:
+            return
+        z = self.spin_target_z.value()
+        x, y = self._pick_plane(self.ax.get_proj(), event.xdata, event.ydata, z)
+        x = round(float(x), 1)
+        y = round(float(y), 1)
+        self.target_xyz = (x, y, z)
+        self.txt_point.setText(f"{x}, {y}, {z}")
+        try:
+            self.txt_auto_point.setText(f"{x}, {y}, {z}")
+        except Exception:
+            pass
+        self.log(f"Ziel gesetzt aus Klick: ({x}, {y}, {z}) cm")
+        self.recalculate_fk_and_update()
+        self.canvas.draw()
+
+    def toggle_target_pick_mode(self):
+        self.target_pick_mode = not self.target_pick_mode
+        try:
+            self.btn_target_pick.setChecked(self.target_pick_mode)
+        except Exception:
+            pass
+        self.log("Klick-Zielmodus aktiv — klicke in die 3D-Ansicht." if self.target_pick_mode
+                 else "Klick-Zielmodus aus.")
+
+    def clear_target(self):
+        self.target_xyz = None
+        self.recalculate_fk_and_update()
+        self.log("Ziel gelöscht.")
+
+    def goto_target(self):
+        if self.target_xyz is None:
+            self.log("Kein Ziel gesetzt. Klicke in die 3D-Ansicht oder gib Koordinaten ein.")
+            return
+        self.txt_point.setText(f"{self.target_xyz[0]}, {self.target_xyz[1]}, {self.target_xyz[2]}")
+        self.on_goto_clicked()
+
+    def side_camera(self):
+        self.ax.view_init(elev=20, azim=0)
+        self.canvas.draw()
+
+    def front_camera(self):
+        self.ax.view_init(elev=20, azim=-90)
         self.canvas.draw()
 
     def _update_tracker_from_coord(self, coord):
@@ -1357,18 +1728,11 @@ class SciFiRobotGUI(QMainWindow):
 
     def _flush_plot(self):
         self._plot_timer_active = False
-        if self._pending_pts is not None:
-            try:
-                self.update_3d_plot(*self._pending_pts)
-                self._update_tracker_from_coord(self._pending_pts[3])
-            except Exception:
-                pass
-            self._pending_pts = None
-        else:
-            try:
-                self.recalculate_fk_and_update()
-            except Exception:
-                pass
+        self._pending_pts = None
+        try:
+            self.recalculate_fk_and_update()
+        except Exception:
+            pass
 
     # ==================================================================
     # INVERSE KINEMATIK (IK)
@@ -1382,53 +1746,69 @@ class SciFiRobotGUI(QMainWindow):
             pass
         return None
 
+    def _predict_plane(self, dual, elbow):
+        a = math.radians(self.angles['Arm'] - 90.0)
+        th1 = math.radians(dual)
+        e = math.radians(elbow - 90.0)
+        r = (L2_CM * math.cos(th1) + L_ARM_CM * math.cos(th1 + a) +
+             (L3_CM + L4_CM) * math.cos(th1 + a + e))
+        z = (L2_CM * math.sin(th1) + L_ARM_CM * math.sin(th1 + a) +
+             (L3_CM + L4_CM) * math.sin(th1 + a + e)) + BASE_HEIGHT_CM
+        return r, z
+
     def calculate_ik(self, x_cm, y_cm, z_cm):
-        l1, l2, l3, l4 = L1_CM, L2_CM, L3_CM, L4_CM
         base_angle = math.degrees(math.atan2(y_cm, x_cm)) + 90.0
         if not (0 <= base_angle <= 180):
             return False, "Punkt liegt außerhalb des 180° Basis-Drehbereichs!", None
+        if x_cm == 0 and y_cm == 0:
+            base_angle = self.angles['Base']
 
-        r = math.sqrt(x_cm**2 + y_cm**2)
-        r_w = r
-        z_w = z_cm + l4 - l1
-        d = math.sqrt(r_w**2 + z_w**2)
-
-        if d > (l2 + l3) or d < abs(l2 - l3):
+        r_off = math.sqrt(x_cm**2 + y_cm**2)
+        z_off = z_cm
+        max_r = L2_CM + L_ARM_CM + L3_CM + L4_CM
+        if math.hypot(r_off, z_off - BASE_HEIGHT_CM) > max_r + 0.5:
             return False, f"Punkt ({x_cm},{y_cm},{z_cm}) außer Reichweite!", None
 
-        cos_elbow = (l2**2 + l3**2 - d**2) / (2 * l2 * l3)
-        cos_elbow = max(-1.0, min(1.0, cos_elbow))
-        angle_elbow = math.degrees(math.acos(cos_elbow))
+        def cost(dual, elbow):
+            r, z = self._predict_plane(dual, elbow)
+            return (r - r_off) ** 2 + (z - z_off) ** 2
 
-        beta = math.atan2(z_w, r_w)
-        cos_alpha = (l2**2 + d**2 - l3**2) / (2 * l2 * d)
-        cos_alpha = max(-1.0, min(1.0, cos_alpha))
-        alpha = math.acos(cos_alpha)
-        angle_shoulder = math.degrees(beta + alpha)
-
-        dual_angle = 180.0 - angle_shoulder
-        arm_angle = angle_shoulder
-        elbow_angle = 180.0 - angle_elbow
-
-        rad_b = math.radians(base_angle - 90.0)
-        p0 = [0, 0, 0]
-        p1 = [0, 0, l1]
-        p2 = [
-            p1[0] + l2 * math.cos(beta + alpha) * math.cos(rad_b),
-            p1[1] + l2 * math.cos(beta + alpha) * math.sin(rad_b),
-            p1[2] + l2 * math.sin(beta + alpha)
-        ]
-        p3 = [x_cm, y_cm, z_cm]
-
+        # Grobes Raster + lokale Verfeinerung (deterministisch)
+        best_e = 1e18
+        dual = elbow = 90
+        for d in range(0, 181, 6):
+            for el in range(0, 181, 6):
+                c = cost(d, el)
+                if c < best_e:
+                    best_e = c
+                    dual, elbow = d, el
+        step = 2.0
+        for _ in range(300):
+            improved = False
+            for dv, de in ((step, 0), (-step, 0), (0, step), (0, -step)):
+                nd = max(0, min(180, dual + dv))
+                ne = max(0, min(180, elbow + de))
+                c = cost(nd, ne)
+                if c < best_e:
+                    best_e = c
+                    dual, elbow = nd, ne
+                    improved = True
+            if not improved:
+                step = max(0.05, step * 0.5)
+            if step <= 0.05:
+                break
+        e = best_e
+        if e > 1.0:
+            return False, f"Punkt ({x_cm},{y_cm},{z_cm}) nicht erreichbar.", None
         target_angles = {
             "Base": int(round(base_angle)),
-            "Dual": int(round(max(0, min(180, dual_angle)))),
-            "Arm": int(round(max(0, min(180, arm_angle)))),
-            "Elbow": int(round(max(0, min(180, elbow_angle)))),
+            "Dual": int(round(max(0, min(180, dual)))),
+            "Arm": int(round(self.angles['Arm'])),
+            "Elbow": int(round(max(0, min(180, elbow)))),
             "Wrist": self.get_wrist_angle(),
             "Finger": self.angles["Finger"]
         }
-        return True, target_angles, (p0, p1, p2, p3)
+        return True, target_angles, None
 
     # ==================================================================
     # BEWEGUNGEN & SCHLEIFEN
@@ -1605,27 +1985,41 @@ class SciFiRobotGUI(QMainWindow):
         self.send_angles(self.angles)
         self.recalculate_fk_and_update()
 
-    def on_slider_moved(self, joint, val):
-        if self.busy > 0:
-            self._resync_sliders(joint)
-            return
-        self.angles[joint] = val
-        self.spins[joint].setValue(val)
+    def _refresh_ui(self):
+        self._syncing = True
+        try:
+            for k, v in self.angles.items():
+                if k in self.sliders:
+                    self.sliders[k][0].setValue(v)
+                    self.sliders[k][1].setText(f"{v}°")
+                if k in self.spins:
+                    self.spins[k].setValue(v)
+        finally:
+            self._syncing = False
+
+    def _set_angle(self, joint, val):
+        prev = self.angles.get(joint, 90)
+        self.angles[joint] = max(0, min(180, val))
+        self._refresh_ui()
+        self._log_movement(joint, prev, self.angles[joint])
         self.send_angles(self.angles)
         self.recalculate_fk_and_update()
         self._record_manual()
+
+    def on_slider_moved(self, joint, val):
+        if self._syncing:
+            return
+        if self.busy > 0:
+            self._resync_sliders(joint)
+            return
+        self._set_angle(joint, val)
 
     def on_spin_changed(self, joint, val):
         if self._syncing or self.busy > 0:
             if self.busy > 0:
                 self._resync_sliders(joint)
             return
-        self.angles[joint] = val
-        self.sliders[joint][0].setValue(val)
-        self.sliders[joint][1].setText(f"{val}°")
-        self.send_angles(self.angles)
-        self.recalculate_fk_and_update()
-        self._record_manual()
+        self._set_angle(joint, val)
 
     def _resync_sliders(self, joint):
         # Gesperrt: Slider zur aktuellen Soll-Position zurücksetzen
@@ -1671,17 +2065,7 @@ class SciFiRobotGUI(QMainWindow):
     def nudge(self, joint, sign):
         if self.busy > 0:
             return
-        self.angles[joint] = max(0, min(180, self.angles[joint] + sign * self.step_angle))
-        self._syncing = True
-        try:
-            self.sliders[joint][0].setValue(self.angles[joint])
-            self.sliders[joint][1].setText(f"{self.angles[joint]}°")
-            self.spins[joint].setValue(self.angles[joint])
-        finally:
-            self._syncing = False
-        self.send_angles(self.angles)
-        self.recalculate_fk_and_update()
-        self._record_manual()
+        self._set_angle(joint, self.angles[joint] + sign * self.step_angle)
 
     # ==================================================================
     # JOYSTICK
@@ -1729,15 +2113,7 @@ class SciFiRobotGUI(QMainWindow):
             self.angles[jx] = max(0, min(180, self.angles[jx] + vx * 2))
         if jy and abs(vy) > 0.05:
             self.angles[jy] = max(0, min(180, self.angles[jy] + vy * 2))
-        self._syncing = True
-        try:
-            for j in (jx, jy):
-                if j:
-                    self.sliders[j][0].setValue(self.angles[j])
-                    self.sliders[j][1].setText(f"{self.angles[j]}°")
-                    self.spins[j].setValue(self.angles[j])
-        finally:
-            self._syncing = False
+        self._refresh_ui()
         self._send_angles(self.angles)
         self._record_manual()
 
@@ -2138,6 +2514,467 @@ class SciFiRobotGUI(QMainWindow):
         save_config(self.cfg)
 
     # ==================================================================
+    # AUTOMATION STUDIO (Objekte, Greifen & Sequenzen)
+    # ==================================================================
+    def _build_automation_page(self):
+        page, c = self._page_container("AUTOMATION STUDIO", '#b14aff')
+
+        # Scrollbarer Inhaltsbereich (verhindert Abschneiden bei kleinen Fenstern)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        cols = QHBoxLayout(inner)
+        left = QVBoxLayout()
+        right = QVBoxLayout()
+        cols.addLayout(left, 1)
+        cols.addLayout(right, 1)
+        scroll.setWidget(inner)
+        c.addWidget(scroll)
+
+        # --- Linke Spalte: Szene / Form-Objekte ---
+        scene_box = QGroupBox("Szenen-Objekte (Kugel / Würfel / Quader / Pyramide / Zylinder)")
+        sl = QGridLayout(scene_box)
+        sl.addWidget(QLabel("Typ:"), 0, 0)
+        self.combo_shape_type = QComboBox()
+        self.combo_shape_type.addItems(SHAPE_TYPES)
+        sl.addWidget(self.combo_shape_type, 0, 1)
+        sl.addWidget(QLabel("Name:"), 1, 0)
+        self.txt_shape_name = QLineEdit("Box1")
+        sl.addWidget(self.txt_shape_name, 1, 1)
+        sl.addWidget(QLabel("Größe (cm):"), 2, 0)
+        self.spin_shape_size = QDoubleSpinBox()
+        self.spin_shape_size.setRange(0.5, 10.0)
+        self.spin_shape_size.setValue(3.0)
+        sl.addWidget(self.spin_shape_size, 2, 1)
+        sl.addWidget(QLabel("Position X,Y,Z (cm):"), 3, 0)
+        self.txt_shape_pos = QLineEdit("8, 8, 0")
+        sl.addWidget(self.txt_shape_pos, 3, 1)
+        b_add = QPushButton("+ OBJEKT HINZUFÜGEN")
+        b_add.clicked.connect(self.add_shape)
+        sl.addWidget(b_add, 4, 0)
+        b_del = QPushButton("- OBJEKT LÖSCHEN")
+        b_del.clicked.connect(self.del_shape)
+        sl.addWidget(b_del, 4, 1)
+        self.shape_list = QListWidget()
+        self.shape_list.itemClicked.connect(self._on_shape_clicked)
+        sl.addWidget(self.shape_list, 5, 0, 1, 2)
+        left.addWidget(scene_box)
+
+        # --- Greif-/Platz-Hand Aktion ---
+        act_box = QGroupBox("Aktion hinzufügen (in Reihenfolge)")
+        al = QGridLayout(act_box)
+        al.addWidget(QLabel("Zielpunkt (X,Y,Z cm):"), 0, 0)
+        self.txt_auto_point = QLineEdit("8, 15, 0")
+        al.addWidget(self.txt_auto_point, 0, 1)
+        b_move = QPushButton("+ MOVE zu Punkt")
+        b_move.clicked.connect(lambda: self.add_action('move'))
+        al.addWidget(b_move, 1, 0)
+        b_grab = QPushButton("+ GRAB (Objekt)")
+        b_grab.clicked.connect(lambda: self.add_action('grab'))
+        al.addWidget(b_grab, 1, 1)
+        b_place = QPushButton("+ PLACE (an Punkt)")
+        b_place.clicked.connect(lambda: self.add_action('place'))
+        al.addWidget(b_place, 2, 0, 1, 2)
+        gripper_row = QHBoxLayout()
+        b_gopen = QPushButton("Fingeröffnen")
+        b_gopen.clicked.connect(lambda: self.add_action('open'))
+        b_gclose = QPushButton("Fingerschließen")
+        b_gclose.clicked.connect(lambda: self.add_action('close'))
+        gripper_row.addWidget(b_gopen)
+        gripper_row.addWidget(b_gclose)
+        al.addLayout(gripper_row, 3, 0, 1, 2)
+        b_wait = QPushButton("+ WARTEN 500 ms")
+        b_wait.clicked.connect(lambda: self.add_action('wait'))
+        al.addWidget(b_wait, 4, 0, 1, 2)
+        left.addWidget(act_box)
+        left.addStretch(0)
+
+        # --- Rechte Spalte: Sequenz + Ausführung + Speichern ---
+        seq_box = QGroupBox("Sequenz (Ausführungsreihenfolge)")
+        sq = QVBoxLayout(seq_box)
+        self.auto_list = QListWidget()
+        sq.addWidget(self.auto_list)
+        row = QHBoxLayout()
+        for lbl, fn in [("Ans Ende", self.auto_move_down),
+                        ("Eins", self.auto_move_up),
+                        ("Löschen", self.del_action)]:
+            b = QPushButton(lbl)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        sq.addLayout(row)
+        right.addWidget(seq_box)
+
+        run_box = QGroupBox("Ausführung")
+        rl = QGridLayout(run_box)
+        rl.addWidget(QLabel("Wiederholungen:"), 0, 0)
+        self.spin_auto_repeat = QSpinBox()
+        self.spin_auto_repeat.setRange(1, 100000)
+        self.spin_auto_repeat.setValue(1)
+        rl.addWidget(self.spin_auto_repeat, 0, 1)
+        b_run = QPushButton("▶ SEQUENZ AUSFÜHREN")
+        b_run.clicked.connect(self.run_automation)
+        rl.addWidget(b_run, 1, 0)
+        b_stop = QPushButton("⏹ STOPP")
+        b_stop.clicked.connect(self.stop_automation)
+        rl.addWidget(b_stop, 1, 1)
+        b_resetpos = QPushButton("PUNKT ÜBERNEHMEN (Ziel)")
+        b_resetpos.clicked.connect(self._use_target_in_seq)
+        rl.addWidget(b_resetpos, 2, 0, 1, 2)
+        self.lbl_auto_status = QLabel("Bereit.")
+        self.lbl_auto_status.setStyleSheet("color: #b14aff; font-weight: bold;")
+        rl.addWidget(self.lbl_auto_status, 3, 0, 1, 2)
+        right.addWidget(run_box)
+
+        io_box = QGroupBox("Speichern / Laden")
+        io = QHBoxLayout(io_box)
+        b_save = QPushButton("Scene speichern")
+        b_save.clicked.connect(self.save_scene)
+        b_load = QPushButton("Scene laden")
+        b_load.clicked.connect(self.load_scene)
+        io.addWidget(b_save)
+        io.addWidget(b_load)
+        right.addWidget(io_box)
+        right.addStretch(0)
+
+        self._render_shape_list()
+        self._render_auto_list()
+        return page
+
+    # ---------- Form-Objekte ----------
+    def _render_shape_list(self):
+        self.shape_list.clear()
+        for o in self.scene_shapes:
+            self.shape_list.addItem(f"{o['name']}  ({o['type']})  "
+                                    f"Pos {o['pos'][0]},{o['pos'][1]},{o['pos'][2]}  "
+                                    f"Gr {o['size']}")
+
+    def _on_shape_clicked(self, item):
+        i = self.shape_list.currentRow()
+        if 0 <= i < len(self.scene_shapes):
+            self.selected_shape = i
+            o = self.scene_shapes[i]
+            self.txt_shape_name.setText(o['name'])
+            self.spin_shape_size.setValue(o['size'])
+            self.txt_shape_pos.setText(f"{o['pos'][0]}, {o['pos'][1]}, {o['pos'][2]}")
+            ci = SHAPE_TYPES.index(o['type']) if o['type'] in SHAPE_TYPES else 0
+            self.combo_shape_type.setCurrentIndex(ci)
+            self.log(f"Objekt gewählt: {o['name']}")
+
+    def _parse_pos(self, text):
+        try:
+            p = [float(x.strip()) for x in text.replace(';', ',').split(',')]
+            if len(p) == 3:
+                return (p[0], p[1], p[2])
+        except Exception:
+            pass
+        return None
+
+    def add_shape(self):
+        pos = self._parse_pos(self.txt_shape_pos.text())
+        if pos is None:
+            QMessageBox.warning(self, "Fehler", "Position X,Y,Z ungültig oder nicht drei Werte.")
+            return
+        self.obj_counter += 1
+        name = self.txt_shape_name.text().strip() or f"Objekt{self.obj_counter}"
+        colors = ['#ffa800', '#00ff88', '#ff5c8a', '#5cc8ff', '#ffe066', '#b14aff', '#ff8a3d']
+        self.scene_shapes.append({
+            'id': self.obj_counter,
+            'name': name,
+            'type': self.combo_shape_type.currentText(),
+            'size': self.spin_shape_size.value(),
+            'pos': pos,
+            'color': colors[self.obj_counter % len(colors)],
+        })
+        self.selected_shape = len(self.scene_shapes) - 1
+        self._render_shape_list()
+        self._save_scene()
+        self.recalculate_fk_and_update()
+        self.log(f"Objekt '{name}' hinzugefügt an {pos}")
+
+    def del_shape(self):
+        i = self.shape_list.currentRow()
+        if i < 0 and self.selected_shape is not None:
+            i = self.selected_shape
+        if 0 <= i < len(self.scene_shapes):
+            self.scene_shapes.pop(i)
+            self.selected_shape = None
+            self._render_shape_list()
+            self._save_scene()
+            self.recalculate_fk_and_update()
+            self.log("Objekt gelöscht.")
+        self._update_3d_selection_label()
+
+    def quick_add_shape(self):
+        self.txt_shape_name.setText(f"o{self.obj_counter + 1}")
+        pos = self.target_xyz if self.target_xyz else (8, 8, 0)
+        self.txt_shape_pos.setText(f"{pos[0]}, {pos[1]}, {pos[2]}")
+        self.add_shape()
+        self._update_3d_selection_label()
+
+    def move_shape_to_target(self):
+        i = self.shape_list.currentRow()
+        if i < 0:
+            i = self.selected_shape
+        if i is None or not (0 <= i < len(self.scene_shapes)):
+            self.log("Kein Objekt gewählt. Bitte Objekt wählen.")
+            return
+        if self.target_xyz is None:
+            self.log("Kein Ziel gesetzt. Klicke in die 3D-Ansicht oder setze ein Ziel.")
+            return
+        self.scene_shapes[i]['pos'] = tuple(self.target_xyz)
+        self._render_shape_list()
+        self._save_scene()
+        self.recalculate_fk_and_update()
+        self.log(f"Objekt '{self.scene_shapes[i]['name']}' bewegt zu {tuple(self.target_xyz)}")
+
+    def edit_selected_shape(self):
+        i = self.shape_list.currentRow()
+        if i < 0:
+            i = self.selected_shape
+        if i is None or not (0 <= i < len(self.scene_shapes)):
+            self.log("Kein Objekt zum Bearbeiten gewählt.")
+            return
+        self.shape_list.setCurrentRow(i)
+        self._on_shape_clicked(self.shape_list.item(i))
+        self.sidebar.setCurrentRow(9)      # Automation Studio
+        self._update_3d_selection_label()
+
+    def _update_3d_selection_label(self):
+        i = self.shape_list.currentRow()
+        if i < 0:
+            i = self.selected_shape
+        if i is not None and 0 <= i < len(self.scene_shapes):
+            o = self.scene_shapes[i]
+            self.lbl_3d_sel.setText(f"{o['name']} / {o['type']}")
+        else:
+            self.lbl_3d_sel.setText("—")
+
+    # ---------- Sequenz-Editing ----------
+    def _action_label(self, a):
+        if a['type'] == 'move':
+            return f"MOVE   -> {tuple(round(v,1) for v in a['point'])}"
+        if a['type'] == 'grab':
+            return f"GRAB   -> {a.get('obj','ausgewählt')}"
+        if a['type'] == 'place':
+            return f"PLACE  -> {a.get('obj','ausgewählt')} an {tuple(round(v,1) for v in a['point'])}"
+        if a['type'] == 'open':
+            return "FINGER OFFEN"
+        if a['type'] == 'close':
+            return "FINGER ZU"
+        if a['type'] == 'wait':
+            return f"WAIT   -> {a.get('ms',500)} ms"
+        return str(a)
+
+    def _render_auto_list(self):
+        self.auto_list.clear()
+        for i, a in enumerate(self.seq_actions):
+            self.auto_list.addItem(f"{i:02d}: {self._action_label(a)}")
+
+    def _selected_obj(self):
+        i = self.shape_list.currentRow()
+        if 0 <= i < len(self.scene_shapes):
+            return i
+        if self.selected_shape is not None and 0 <= self.selected_shape < len(self.scene_shapes):
+            return self.selected_shape
+        return None
+
+    def _action_point(self):
+        pt = self._parse_pos(self.txt_auto_point.text())
+        if pt is None:
+            pt = self.target_xyz
+        if pt is None:
+            pt = self.current_xyz
+        return pt
+
+    def add_action(self, kind):
+        obj = self._selected_obj()
+        if kind in ('grab', 'place') and obj is None:
+            QMessageBox.warning(self, "Fehler", "Bitte zuerst ein Objekt in der Liste wählen.")
+            return
+        if kind == 'move':
+            self.seq_actions.append({'type': 'move', 'point': self._action_point()})
+        elif kind == 'grab':
+            self.seq_actions.append({'type': 'grab', 'obj': obj, 'base': self.scene_shapes[obj]['name']})
+        elif kind == 'place':
+            self.seq_actions.append({'type': 'place', 'obj': obj, 'point': self._action_point(),
+                                     'base': self.scene_shapes[obj]['name']})
+        elif kind == 'open':
+            self.seq_actions.append({'type': 'open'})
+        elif kind == 'close':
+            self.seq_actions.append({'type': 'close'})
+        elif kind == 'wait':
+            self.seq_actions.append({'type': 'wait', 'ms': 500})
+        self._render_auto_list()
+        self._save_scene()
+
+    def del_action(self):
+        i = self.auto_list.currentRow()
+        if 0 <= i < len(self.seq_actions):
+            self.seq_actions.pop(i)
+            self._render_auto_list()
+            self._save_scene()
+
+    def auto_move_up(self):
+        i = self.auto_list.currentRow()
+        if i > 0 and i < len(self.seq_actions):
+            self.seq_actions[i - 1], self.seq_actions[i] = self.seq_actions[i], self.seq_actions[i - 1]
+            self._render_auto_list()
+            self.auto_list.setCurrentRow(i - 1)
+
+    def auto_move_down(self):
+        i = self.auto_list.currentRow()
+        if 0 <= i < len(self.seq_actions) - 1:
+            self.seq_actions[i + 1], self.seq_actions[i] = self.seq_actions[i], self.seq_actions[i + 1]
+            self._render_auto_list()
+            self.auto_list.setCurrentRow(i + 1)
+
+    def _use_target_in_seq(self):
+        if self.target_xyz is not None:
+            self.txt_auto_point.setText(
+                f"{self.target_xyz[0]}, {self.target_xyz[1]}, {self.target_xyz[2]}")
+            self.log("Zielpunkt in Aktionsfeld übernommen.")
+
+    # ---------- Ausführung ----------
+    def _apply_gripper(self, target_angle):
+        pos = dict(self.angles)
+        pos['Finger'] = int(target_angle)
+        self._send_angles(pos)
+        self.sig_pose.emit(dict(pos), None)
+        self.angles['Finger'] = int(target_angle)
+
+    def _auto_move_to(self, point):
+        ok, ik, pts = self.calculate_ik(*point)
+        if not ok:
+            self.sig_auto_status.emit(f"Nicht erreichbar: {point}")
+            return False
+        self.move_smoothly(ik, pts)
+        return True
+
+    def _auto_grab(self, obj):
+        o = self.scene_shapes[obj]
+        base = (o['pos'][0], o['pos'][1], o['pos'][2])
+        if not self._auto_move_to((base[0], base[1], base[2] + 4.0)):
+            return False
+        ok, ikg, _ = self.calculate_ik(base[0], base[1], base[2])
+        if not ok:
+            return False
+        ikg['Finger'] = GREIFER_OFFEN
+        self.move_smoothly(ikg)
+        if not self._abortable_sleep(0.3):
+            return False
+        self._apply_gripper(GREIFER_ZU)
+        if not self._abortable_sleep(0.4):
+            return False
+        self._auto_move_to((base[0], base[1], base[2] + 4.0))
+        return True
+
+    def _auto_drop(self, obj, point):
+        if not self._auto_move_to((point[0], point[1], point[2] + 4.0)):
+            return False
+        ok, ikd, _ = self.calculate_ik(*point)
+        if not ok:
+            return False
+        ikd['Finger'] = GREIFER_ZU
+        self.move_smoothly(ikd)
+        if not self._abortable_sleep(0.3):
+            return False
+        self._apply_gripper(GREIFER_OFFEN)
+        if not self._abortable_sleep(0.4):
+            return False
+        self.scene_shapes[obj]['pos'] = (point[0], point[1], point[2])
+        self._auto_move_to((point[0], point[1], point[2] + 4.0))
+        return True
+
+    def run_automation(self):
+        if self.auto_running or self.busy > 0 or not self.seq_actions:
+            if self.seq_actions:
+                self.log("Automation bereits aktiv oder System beschäftigt.")
+            return
+        self.auto_repeat = max(1, self.spin_auto_repeat.value())
+        self.auto_running = True
+        self.auto_abort.clear()
+        self.busy += 1
+        self.lbl_auto_status.setText("Läuft ...")
+
+        def worker():
+            try:
+                for r in range(self.auto_repeat):
+                    for i, a in enumerate(list(self.seq_actions)):
+                        if self.auto_abort.is_set():
+                            return
+                        self.sig_auto_status.emit(
+                            f"Durchlauf {r + 1}/{self.auto_repeat} — Schritt {i + 1}/{len(self.seq_actions)}")
+                        if a['type'] == 'move':
+                            self._auto_move_to(a['point'])
+                        elif a['type'] == 'grab':
+                            self._auto_grab(a['obj'])
+                        elif a['type'] == 'place':
+                            self._auto_drop(a['obj'], a['point'])
+                        elif a['type'] == 'open':
+                            self._apply_gripper(GREIFER_OFFEN)
+                        elif a['type'] == 'close':
+                            self._apply_gripper(GREIFER_ZU)
+                        elif a['type'] == 'wait':
+                            self._abortable_sleep(a.get('ms', 500) / 1000.0)
+                self.sig_auto_status.emit("Fertig.")
+            finally:
+                self.auto_running = False
+                self.busy = max(0, self.busy - 1)
+                self.sig_auto_done.emit()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def stop_automation(self):
+        self.auto_abort.set()
+        self.auto_running = False
+        self.log("Stopp-Signal für Automation gesendet.")
+
+    def _on_auto_status(self, text):
+        self.lbl_auto_status.setText(text)
+
+    def _on_auto_done(self):
+        self.lbl_auto_status.setText("Bereit.")
+        self.log("Automation beendet.")
+        self._render_shape_list()
+        self.recalculate_fk_and_update()
+
+    # ---------- Persistenz ----------
+    def _load_scene(self):
+        try:
+            if os.path.exists(SCENE_FILE):
+                with open(SCENE_FILE, encoding='utf-8') as f:
+                    data = json.load(f)
+                self.scene_shapes = data.get('shapes', [])
+                self.seq_actions = data.get('actions', [])
+                self.obj_counter = int(data.get('counter', self.obj_counter))
+                self.auto_repeat = int(data.get('repeat', self.auto_repeat))
+        except Exception:
+            pass
+
+    def _save_scene(self):
+        try:
+            os.makedirs(AUTOMATION_DIR, exist_ok=True)
+            with open(SCENE_FILE, 'w', encoding='utf-8') as f:
+                json.dump({'shapes': self.scene_shapes, 'actions': self.seq_actions,
+                           'counter': self.obj_counter, 'repeat': self.auto_repeat},
+                          f, indent=2)
+        except Exception:
+            pass
+
+    def save_scene(self):
+        self._save_scene()
+        self.log("Scene gespeichert (automation/scene.json)")
+
+    def load_scene(self):
+        self._load_scene()
+        self._render_shape_list()
+        self._render_auto_list()
+        self.recalculate_fk_and_update()
+        self.log("Scene geladen.")
+
+    # ==================================================================
     # VERBINDUNG / SIMULATION / E-STOP
     # ==================================================================
     def toggle_connection(self):
@@ -2207,6 +3044,8 @@ class SciFiRobotGUI(QMainWindow):
         self.motion_cancel.set()
         self.motion_pause.set()
         self.loop_active = False
+        self.auto_running = False
+        self.auto_abort.set()
         self.busy = 0
         # Safe-Home anfahren
         self.angles = dict(self.safe_home)
@@ -2228,6 +3067,8 @@ class SciFiRobotGUI(QMainWindow):
         self.motion_cancel.set()
         self.motion_pause.set()
         self.loop_active = False
+        self.auto_running = False
+        self.auto_abort.set()
         self._poll_timer.stop()
         if self.manager is not None:
             try:
